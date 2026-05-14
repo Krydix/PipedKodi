@@ -28,6 +28,16 @@ const routes = [
         component: () => import("../components/PlaylistPage.vue"),
     },
     {
+        path: "/remote/player",
+        name: "RemotePlayer",
+        component: () => import("../components/RemotePlayerPage.vue"),
+    },
+    {
+        path: "/remote/controller",
+        name: "RemoteController",
+        component: () => import("../components/RemoteControllerPage.vue"),
+    },
+    {
         path: "/:path(v|w|embed|live|shorts|watch)/:v?",
         name: "WatchVideo",
         component: () => import("../components/WatchVideo.vue"),

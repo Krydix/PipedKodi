@@ -1,10 +1,10 @@
 <template>
     <div
-        class="flex min-h-screen w-full flex-col bg-white px-[1vw] py-5 text-black antialiased dark:bg-dark-900 dark:text-white"
-        :class="[theme]"
+        class="flex min-h-screen w-full flex-col bg-white text-black antialiased dark:bg-dark-900 dark:text-white"
+        :class="[theme, hideChrome ? 'p-0' : 'px-[1vw] py-5']"
     >
         <div class="flex-1">
-            <NavBar />
+            <NavBar v-if="!hideChrome" />
             <router-view v-slot="{ Component }">
                 <keep-alive :max="5">
                     <component :is="Component" :key="$route.fullPath" />
@@ -12,12 +12,13 @@
             </router-view>
         </div>
 
-        <FooterComponent />
+        <FooterComponent v-if="!hideChrome" />
     </div>
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import NavBar from "./components/NavBar.vue";
 import FooterComponent from "./components/FooterComponent.vue";
 import { testLocalStorage, usePreferenceString } from "@/composables/usePreferences.js";
@@ -26,10 +27,12 @@ import { fetchSubscriptions } from "@/composables/useSubscriptions.js";
 import { getChannelGroups, createOrUpdateChannelGroup } from "@/composables/useChannelGroups.js";
 
 const darkModePreference = window.matchMedia("(prefers-color-scheme: dark)");
+const route = useRoute();
 
 const themePreference = usePreferenceString("theme", "dark");
 const localePreference = usePreferenceString("hl", "en");
 const theme = ref("dark");
+const hideChrome = computed(() => route.path === "/remote/player" || route.query.remoteRole === "player");
 
 function setTheme() {
     const themes = {
@@ -121,17 +124,21 @@ onMounted(() => {
             // migration to fix an invalid previous length of channel ids: 11 -> 24
             (async () => {
                 if (ev.oldVersion < 6) {
-                    const subscriptions = await fetchSubscriptions();
-                    const channelGroups = await getChannelGroups();
-                    for (let group of channelGroups) {
-                        for (let i = 0; i < group.channels.length; i++) {
-                            const tooShortChannelId = group.channels[i];
-                            const foundChannel = subscriptions.find(
-                                channel => channel.url.substr(-11) == tooShortChannelId,
-                            );
-                            if (foundChannel) group.channels[i] = foundChannel.url.substr(-24);
+                    try {
+                        const subscriptions = await fetchSubscriptions();
+                        const channelGroups = await getChannelGroups();
+                        for (let group of channelGroups) {
+                            for (let i = 0; i < group.channels.length; i++) {
+                                const tooShortChannelId = group.channels[i];
+                                const foundChannel = subscriptions.find(
+                                    channel => channel.url.substr(-11) == tooShortChannelId,
+                                );
+                                if (foundChannel) group.channels[i] = foundChannel.url.substr(-24);
+                            }
+                            createOrUpdateChannelGroup(group);
                         }
-                        createOrUpdateChannelGroup(group);
+                    } catch (error) {
+                        console.error("Unable to migrate channel groups.", error);
                     }
                 }
             })();

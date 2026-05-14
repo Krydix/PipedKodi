@@ -79,6 +79,20 @@
             <li v-if="!shouldShowTrending">
                 <router-link v-t="'titles.feed'" to="/feed" class="hover:text-red-500 dark:hover:text-red-400" />
             </li>
+            <li>
+                <router-link
+                    to="/remote/controller"
+                    class="hover:text-red-500 dark:hover:text-red-400"
+                    title="Remote controller"
+                >
+                    <i-fa6-solid-mobile-screen class="inline" />
+                </router-link>
+            </li>
+            <li>
+                <router-link to="/remote/player" class="hover:text-red-500 dark:hover:text-red-400" title="TV player">
+                    <i-fa6-solid-tv class="inline" />
+                </router-link>
+            </li>
         </ul>
     </nav>
     <!-- navigation bar for mobile devices -->
@@ -113,6 +127,14 @@
         <router-link v-if="!shouldShowTrending" to="/feed">
             <i-fa6-solid-play />
             <i18n-t keypath="titles.feed"></i18n-t>
+        </router-link>
+        <router-link to="/remote/controller">
+            <i-fa6-solid-mobile-screen />
+            <span>Remote controller</span>
+        </router-link>
+        <router-link to="/remote/player">
+            <i-fa6-solid-tv />
+            <span>TV player</span>
         </router-link>
     </div>
     <!-- search suggestions for mobile devices -->
@@ -225,9 +247,14 @@ function onSearchTextChange(text) {
 }
 
 async function fetchAuthConfig() {
-    fetchJson(authApiUrl() + "/config").then(config => {
-        registrationDisabled.value = config?.registrationDisabled === true;
-    });
+    fetchJson(authApiUrl() + "/config")
+        .then(config => {
+            registrationDisabled.value = config?.registrationDisabled === true;
+        })
+        .catch(error => {
+            console.error("Unable to fetch auth config.", error);
+            registrationDisabled.value = false;
+        });
 }
 
 function onSearchClick(e) {

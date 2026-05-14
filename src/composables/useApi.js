@@ -1,5 +1,18 @@
 import { getPreferenceBoolean, getPreferenceString } from "./usePreferences.js";
 
+function getRelayOrigin() {
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    return `${protocol}//${window.location.hostname}:8090`;
+}
+
+function getRelayApiUrl() {
+    return `${getRelayOrigin()}/api/piped`;
+}
+
+export function relayUrl(path = "") {
+    return `${getRelayOrigin()}${path}`;
+}
+
 export function fetchJson(url, params, options) {
     if (params) {
         url = new URL(url);
@@ -18,7 +31,13 @@ export function hashCode(s) {
 }
 
 export function apiUrl() {
-    return getPreferenceString("instance", import.meta.env.VITE_PIPED_API);
+    const selectedInstance = getPreferenceString("instance", getRelayApiUrl());
+
+    if (!selectedInstance || selectedInstance === import.meta.env.VITE_PIPED_API) {
+        return getRelayApiUrl();
+    }
+
+    return selectedInstance;
 }
 
 export function authApiUrl() {

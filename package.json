@@ -7,6 +7,7 @@
         "dev": "vite",
         "build": "vite build",
         "preview": "vite preview",
+        "remote-relay": "node ./server/remote-relay.mjs",
         "format": "prettier -w --ignore-path .gitignore **/**.{js,vue,json}",
         "lint": "eslint --fix --color ."
     },
@@ -23,7 +24,8 @@
         "shaka-player": "5.1.0",
         "vue": "3.5.32",
         "vue-i18n": "11.3.2",
-        "vue-router": "5.0.4"
+        "vue-router": "5.0.4",
+        "ws": "8.18.3"
     },
     "devDependencies": {
         "@eslint/js": "10.0.1",

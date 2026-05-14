@@ -116,6 +116,28 @@ pnpm dev
 
 You can now make changes and view then in realtime!
 
+### Remote TV controller mode
+
+This fork includes a shared-room remote workflow for a phone-plus-TV setup.
+
+1. Start the frontend as usual.
+2. Start the relay server in a second process:
+
+```sh
+pnpm remote-relay
+```
+
+3. Open `/remote/player` on the TV machine.
+4. Open `/remote/controller` on any phone you want to use as a remote.
+5. Leave "Route video clicks to the TV" enabled on that phone. Browsing the normal homepage on that phone will now send selected videos to the TV player instead of opening the local watch page.
+
+Notes:
+
+-   The relay defaults to port `8090` on the same host as the frontend.
+-   The default shared room id is `living-room`, so there is no pairing step. Anyone using the same frontend and relay can overwrite the current TV video.
+-   The TV side uses the normal Piped player, so SponsorBlock and the existing watch preferences still apply.
+-   The phone controller starts a silent looping audio element and updates the Media Session API so lock-screen play/pause/seek controls can target the TV session.
+
 ## Donations
 
 Donations (to Kavin) can be made at:

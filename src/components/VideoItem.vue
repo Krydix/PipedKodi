@@ -1,16 +1,9 @@
 <template>
     <div v-if="showVideo" class="flex flex-col justify-between">
-        <router-link
+        <a
             class="inline-block w-full hover:text-red-500 focus:text-red-500 dark:hover:text-red-400 dark:focus:text-red-400"
-            :to="{
-                path: '/watch',
-                query: {
-                    v: item.url.substr(-11),
-                    ...(playlistId && { list: playlistId }),
-                    ...(index >= 0 && { index: index + 1 }),
-                    ...(preferListen && { listen: 1 }),
-                },
-            }"
+            :href="watchHref"
+            @click="handleWatchSelection($event, watchTarget)"
         >
             <VideoThumbnail :item="item" />
 
@@ -21,7 +14,7 @@
                     v-text="title"
                 />
             </div>
-        </router-link>
+        </a>
 
         <div class="flex items-start pt-1">
             <router-link :to="item.uploaderUrl">
@@ -64,22 +57,15 @@
             </div>
 
             <div class="ml-1 flex shrink-0 items-center gap-2.5 pt-0.5">
-                <router-link
-                    :to="{
-                        path: '/watch',
-                        query: {
-                            v: item.url.substr(-11),
-                            ...(playlistId && { list: playlistId }),
-                            ...(index >= 0 && { index: index + 1 }),
-                            ...(!preferListen && { listen: 1 }),
-                        },
-                    }"
+                <a
+                    :href="listenHref"
                     :aria-label="preferListen ? title : 'Listen to ' + title"
                     :title="preferListen ? title : 'Listen to ' + title"
+                    @click="handleWatchSelection($event, listenTarget)"
                 >
                     <i-fa6-solid-tv v-if="preferListen" />
                     <i-fa6-solid-headphones v-else />
-                </router-link>
+                </a>
                 <button :title="$t('actions.add_to_playlist')" @click="showPlaylistModal = !showPlaylistModal">
                     <i-fa6-solid-circle-plus />
                 </button>
@@ -130,6 +116,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import PlaylistAddModal from "./PlaylistAddModal.vue";
 import ShareModal from "./ShareModal.vue";
 import ConfirmModal from "./ConfirmModal.vue";
@@ -137,6 +124,11 @@ import VideoThumbnail from "./VideoThumbnail.vue";
 import { numberFormat, timeAgo } from "@/composables/useFormatting.js";
 import { getPreferenceBoolean } from "@/composables/usePreferences.js";
 import { removeVideoFromPlaylist } from "@/composables/usePlaylists.js";
+import {
+    ensureRemoteSessionId,
+    sendRemoteMessageOnce,
+    shouldUseRemoteBrowse,
+} from "@/composables/useRemotePlayback.js";
 
 const props = defineProps({
     item: {
@@ -159,6 +151,7 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["update:watched", "remove"]);
+const router = useRouter();
 
 const removeButton = ref(null);
 const showPlaylistModal = ref(false);
@@ -170,6 +163,80 @@ const showMarkOnWatched = ref(false);
 const title = computed(() => {
     return props.item.dearrow?.titles[0]?.title ?? props.item.title;
 });
+
+const watchTarget = computed(() => ({
+    path: "/watch",
+    query: {
+        v: props.item.url.substr(-11),
+        ...(props.playlistId && { list: props.playlistId }),
+        ...(props.index >= 0 && { index: props.index + 1 }),
+        ...(props.preferListen && { listen: 1 }),
+    },
+}));
+
+const listenTarget = computed(() => ({
+    path: "/watch",
+    query: {
+        v: props.item.url.substr(-11),
+        ...(props.playlistId && { list: props.playlistId }),
+        ...(props.index >= 0 && { index: props.index + 1 }),
+        ...(!props.preferListen && { listen: 1 }),
+    },
+}));
+
+const watchHref = computed(() => router.resolve(watchTarget.value).href);
+
+const listenHref = computed(() => router.resolve(listenTarget.value).href);
+
+function isPrimaryClick(event) {
+    return (
+        !event.defaultPrevented &&
+        event.button === 0 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey
+    );
+}
+
+async function handleWatchSelection(event, target) {
+    if (!isPrimaryClick(event)) return;
+
+    event.preventDefault();
+
+    if (!shouldUseRemoteBrowse()) {
+        router.push(target);
+        return;
+    }
+
+    const sessionId = ensureRemoteSessionId();
+    const videoId = target.query.v;
+    const payload = {
+        videoId,
+        title: title.value,
+        uploader: props.item.uploaderName,
+        thumbnail: props.item.thumbnail,
+        duration: props.item.duration,
+        query: {
+            ...target.query,
+            v: videoId,
+        },
+    };
+
+    try {
+        await sendRemoteMessageOnce({
+            sessionId,
+            type: "load",
+            payload,
+        });
+        router.push({
+            path: "/remote/controller",
+        });
+    } catch (error) {
+        console.error("Unable to send remote load command.", error);
+        router.push(target);
+    }
+}
 
 function removeVideo() {
     removeButton.value.disabled = true;

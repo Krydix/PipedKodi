@@ -102,7 +102,7 @@ const props = defineProps({
     isEmbed: Boolean,
 });
 
-const emit = defineEmits(["timeupdate", "ended", "navigateNext"]);
+const emit = defineEmits(["timeupdate", "ended", "navigateNext", "playstatechange"]);
 
 const container = ref(null);
 const videoEl = ref(null);
@@ -129,7 +129,7 @@ let lastSelectedTextTrack = null;
 let thumbnailVttUrl = null;
 
 const shouldAutoPlay = computed(() => {
-    return getPreferenceBoolean("playerAutoPlay", true) && !props.isEmbed;
+    return getPreferenceBoolean("playerAutoPlay", true) && (!props.isEmbed || route.query.remoteRole === "player");
 });
 
 const preferredVideoCodecs = computed(() => {
@@ -344,6 +344,35 @@ function seek(time) {
     if (videoEl.value) {
         videoEl.value.currentTime = time;
     }
+}
+
+function setPaused(paused) {
+    if (!videoEl.value) return;
+
+    if (paused) {
+        videoEl.value.pause();
+        return;
+    }
+
+    videoEl.value.play().catch(error => {
+        console.error("Unable to resume playback.", error);
+    });
+}
+
+function getCurrentTime() {
+    return videoEl.value?.currentTime ?? 0;
+}
+
+function getDuration() {
+    return videoEl.value?.duration ?? props.video.duration ?? 0;
+}
+
+function isPaused() {
+    return videoEl.value?.paused ?? true;
+}
+
+function getPlaybackRate() {
+    return videoEl.value?.playbackRate ?? 1;
 }
 
 async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
@@ -723,6 +752,22 @@ async function loadVideo() {
         el.addEventListener("ended", () => {
             emit("ended");
         });
+
+        el.addEventListener("play", () => {
+            emit("playstatechange", false);
+        });
+
+        el.addEventListener("pause", () => {
+            emit("playstatechange", true);
+        });
+
+        el.addEventListener("loadedmetadata", () => {
+            // Remote TV playback needs an explicit play attempt after the source is ready.
+            if (route.query.remoteRole === "player" && el.paused) {
+                setPaused(false);
+            }
+            emit("playstatechange", el.paused);
+        });
     }
 }
 
@@ -914,8 +959,13 @@ onUnmounted(() => {
 defineExpose({
     loadVideo,
     seek,
+    setPaused,
     destroy,
     updateSponsors,
+    getCurrentTime,
+    getDuration,
+    isPaused,
+    getPlaybackRate,
     isFullScreenEnabled: () => uiInstance?.getControls()?.isFullScreenEnabled(),
 });
 </script>

@@ -50,11 +50,15 @@ const statusPageHref = ref(null);
 const privacyPolicyHref = ref(null);
 
 onMounted(() => {
-    fetchJson(apiUrl() + "/config").then(config => {
-        donationHref.value = config?.donationUrl;
-        statusPageHref.value = config?.statusPageUrl;
-        privacyPolicyHref.value = config?.privacyPolicyUrl;
-    });
+    fetchJson(apiUrl() + "/config")
+        .then(config => {
+            donationHref.value = config?.donationUrl;
+            statusPageHref.value = config?.statusPageUrl;
+            privacyPolicyHref.value = config?.privacyPolicyUrl;
+        })
+        .catch(error => {
+            console.error("Unable to fetch footer config.", error);
+        });
 });
 </script>
 

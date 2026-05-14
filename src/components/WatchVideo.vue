@@ -7,6 +7,8 @@
             :selected-auto-play="false"
             :selected-auto-loop="selectedAutoLoop"
             :is-embed="isEmbed"
+            @timeupdate="onTimeUpdate"
+            @playstatechange="onRemotePlaybackStateChange"
         />
     </div>
     <div id="theaterModeSpot" class="-mx-[1vw]"></div>
@@ -31,6 +33,7 @@
                                 @timeupdate="onTimeUpdate"
                                 @ended="onVideoEnded"
                                 @navigate-next="navigateNext"
+                                @playstatechange="onRemotePlaybackStateChange"
                             />
                         </keep-alive>
                         <button
@@ -352,7 +355,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted } from "vue";
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import VideoPlayer from "./VideoPlayer.vue";
 import ContentItem from "./ContentItem.vue";
@@ -368,7 +371,7 @@ import ToastComponent from "./ToastComponent.vue";
 import UiCheckbox from "./ui/Checkbox.vue";
 import { parseTimeParam } from "@/utils/Misc";
 import { purifyHTML, rewriteDescription } from "@/utils/HtmlUtils";
-import { fetchJson, apiUrl } from "@/composables/useApi.js";
+import { fetchJson, apiUrl, relayUrl } from "@/composables/useApi.js";
 import {
     getPreferenceBoolean,
     getPreferenceNumber,
@@ -384,6 +387,7 @@ import {
 } from "@/composables/useSubscriptions.js";
 import { updateWatched } from "@/composables/useMisc.js";
 import { getPlaylist } from "@/composables/usePlaylists.js";
+import { createRemoteClient, normalizeRemoteSessionId } from "@/composables/useRemotePlayback.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -418,6 +422,8 @@ let timeoutCounter = null;
 const counter = ref(0);
 const theaterMode = ref(false);
 let loading = false;
+let remoteClient = null;
+let lastRemoteStateAt = 0;
 
 const isListening = computed(() => {
     return getPreferenceBoolean("listen", false);
@@ -445,6 +451,12 @@ const isEmbed = computed(() => {
     return String(route.path).indexOf("/embed/") == 0;
 });
 
+const isRemotePlayer = computed(
+    () => route.query.remoteRole === "player" && Boolean(normalizeRemoteSessionId(route.query.remoteSession)),
+);
+
+const remoteSessionId = computed(() => normalizeRemoteSessionId(route.query.remoteSession));
+
 const uploadDate = computed(() => {
     return new Date(video.value.uploadDate).toLocaleString(undefined, {
         month: "short",
@@ -468,6 +480,16 @@ const youtubeVideoHref = computed(() => {
 });
 
 function fetchVideo() {
+    if (isRemotePlayer.value) {
+        return fetchJson(relayUrl() + "/api/yt/streams/" + getVideoId()).then(data => {
+            if (!data?.error) {
+                return data;
+            }
+
+            return fetchJson(apiUrl() + "/streams/" + getVideoId());
+        });
+    }
+
     return fetchJson(apiUrl() + "/streams/" + getVideoId());
 }
 
@@ -646,6 +668,125 @@ function navigate(time) {
 
 function onTimeUpdate(time) {
     currentTime.value = time;
+    sendRemotePlayerState();
+}
+
+function buildRemoteMediaPayload() {
+    if (!video.value) return null;
+
+    return {
+        videoId: getVideoId(),
+        title: video.value.title,
+        uploader: video.value.uploader,
+        thumbnail: video.value.thumbnailUrl,
+        duration: videoPlayer.value?.getDuration?.() ?? video.value.duration,
+        currentTime: videoPlayer.value?.getCurrentTime?.() ?? currentTime.value,
+        paused: videoPlayer.value?.isPaused?.() ?? true,
+        playbackRate: videoPlayer.value?.getPlaybackRate?.() ?? 1,
+        query: {
+            ...route.query,
+            v: getVideoId(),
+        },
+    };
+}
+
+function canLoadVideoPlayer() {
+    return (
+        Boolean(video.value) &&
+        !video.value.error &&
+        Array.isArray(video.value.audioStreams) &&
+        Array.isArray(video.value.videoStreams)
+    );
+}
+
+async function loadCurrentVideoIntoPlayer() {
+    if (!canLoadVideoPlayer()) return;
+
+    await nextTick();
+    videoPlayer.value?.loadVideo();
+}
+
+function sendRemotePlayerState(force = false, extraState = {}) {
+    if (!isRemotePlayer.value || !remoteClient || !video.value || video.value.error) return;
+
+    const now = Date.now();
+    if (!force && now - lastRemoteStateAt < 750) return;
+    lastRemoteStateAt = now;
+
+    const payload = buildRemoteMediaPayload();
+    if (!payload) return;
+
+    remoteClient.send("player_state", {
+        ...payload,
+        ...extraState,
+    });
+}
+
+function onRemotePlaybackStateChange(paused) {
+    sendRemotePlayerState(true, { paused });
+}
+
+function applyRemoteLoad(remoteMedia) {
+    const nextVideoId = remoteMedia?.videoId ?? remoteMedia?.query?.v;
+    if (!nextVideoId || !remoteSessionId.value) return;
+
+    const targetRoute = router.resolve({
+        path: `/embed/${nextVideoId}`,
+        query: {
+            ...(remoteMedia.query ?? {}),
+            remoteSession: remoteSessionId.value,
+            remoteRole: "player",
+        },
+    });
+
+    if (targetRoute.fullPath !== route.fullPath) {
+        router.replace(targetRoute);
+    }
+}
+
+function handleRemoteControl(control) {
+    if (!control || !videoPlayer.value) return;
+
+    switch (control.action) {
+        case "play":
+            videoPlayer.value.setPaused(false);
+            break;
+        case "pause":
+            videoPlayer.value.setPaused(true);
+            break;
+        case "seek":
+            videoPlayer.value.seek(Number(control.currentTime ?? 0));
+            sendRemotePlayerState(true);
+            break;
+        case "seekBy":
+            videoPlayer.value.seek(
+                Math.max(0, (videoPlayer.value.getCurrentTime?.() ?? currentTime.value) + Number(control.delta ?? 0)),
+            );
+            sendRemotePlayerState(true);
+            break;
+    }
+}
+
+function connectRemotePlayerSession() {
+    if (!isRemotePlayer.value || !remoteSessionId.value) return;
+
+    remoteClient = createRemoteClient({
+        sessionId: remoteSessionId.value,
+        role: "player",
+        onMessage(message) {
+            if (message.type === "control") {
+                handleRemoteControl(message.payload);
+            }
+
+            if (message.type === "load") {
+                applyRemoteLoad(message.payload);
+            }
+
+            if (message.type === "session_state" && message.payload?.media) {
+                applyRemoteLoad(message.payload.media);
+            }
+        },
+    });
 }
 
 function onVideoEnded() {
@@ -731,6 +872,7 @@ function downloadCurrentFrame() {
 }
 
 onMounted(() => {
+    connectRemotePlayerSession();
     isMobile.value = window.innerWidth < 1024;
     window.addEventListener("resize", () => {
         isMobile.value = window.innerWidth < 1024;
@@ -761,7 +903,10 @@ onMounted(() => {
                 };
             }
         })();
-        if (active.value) videoPlayer.value.loadVideo();
+        if (active.value) {
+            loadCurrentVideoIntoPlayer();
+        }
+        window.setTimeout(() => sendRemotePlayerState(true), 1000);
     });
     playlistId.value = route.query.list;
     index.value = Number(route.query.index);
@@ -783,9 +928,9 @@ onActivated(() => {
     showDesc.value = !getPreferenceBoolean("minimizeDescription", true);
     showRecs.value = !getPreferenceBoolean("minimizeRecommendations", false);
     showChapters.value = !getPreferenceBoolean("minimizeChapters", false);
-    if (video.value?.duration) {
+    if (canLoadVideoPlayer() && video.value?.duration) {
         document.title = video.value.title + " - Piped";
-        videoPlayer.value.loadVideo();
+        loadCurrentVideoIntoPlayer();
     }
     window.addEventListener("scroll", handleScroll);
 });
@@ -799,6 +944,7 @@ onDeactivated(() => {
 onUnmounted(() => {
     window.removeEventListener("scroll", handleScroll);
     window.removeEventListener("click", handleClick);
+    remoteClient?.close();
     dismiss();
 });
 </script>
