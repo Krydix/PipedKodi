@@ -7,7 +7,6 @@ import IconsResolver from "unplugin-icons/resolver";
 import legacy from "@vitejs/plugin-legacy";
 import VueI18nPlugin from "@intlify/unplugin-vue-i18n/vite";
 import { VitePWA } from "vite-plugin-pwa";
-import os from "node:os";
 import path from "path";
 import eslintPlugin from "vite-plugin-eslint";
 
@@ -15,35 +14,13 @@ const enableLegacyBuild = process.env.VITE_BUILD_LEGACY === "true";
 const enableBuildLint = process.env.VITE_LINT_BUILD === "true";
 const enableSourceMaps = process.env.VITE_BUILD_SOURCEMAP === "true";
 
-function getAllowedHosts() {
-    const detectedHostname = os.hostname().trim().toLowerCase();
-    const normalizedHostname = detectedHostname.replace(/\.local$/u, "");
-    const configuredHosts = (process.env.VITE_ALLOWED_HOSTS ?? "")
-        .split(",")
-        .map(host => host.trim().toLowerCase())
-        .filter(Boolean);
-
-    return Array.from(
-        new Set([
-            "localhost",
-            ".local",
-            detectedHostname,
-            normalizedHostname,
-            normalizedHostname ? `${normalizedHostname}.local` : "",
-            ...configuredHosts,
-        ].filter(Boolean)),
-    );
-}
-
-const allowedHosts = getAllowedHosts();
-
 // https://vitejs.dev/config/
 export default defineConfig({
     server: {
-        allowedHosts,
+        allowedHosts: true,
     },
     preview: {
-        allowedHosts,
+        allowedHosts: true,
     },
     plugins: [
         vue(),
