@@ -11,6 +11,9 @@ const host = process.env.HOST ?? "0.0.0.0";
 const pipedApiBaseUrl = process.env.PIPED_API_URL ?? "https://api.piped.private.coffee";
 const ytDlpBin = process.env.YT_DLP_BIN ?? "yt-dlp";
 const ytDlpTimeoutMs = Number(process.env.YT_DLP_TIMEOUT_MS ?? 30000);
+const silentAudioSampleRate = 8000;
+const silentAudioMaxDurationSeconds = 60 * 60 * 12;
+const silentAudioChunkSizeBytes = 64 * 1024;
 const rooms = new Map();
 const ytDlpCache = new Map();
 
@@ -30,6 +33,121 @@ function createProxyUrl(pathname, searchParams) {
 
 function sanitizeVideoId(rawValue) {
     return /^[a-zA-Z0-9_-]{11}$/.test(rawValue ?? "") ? rawValue : null;
+}
+
+function normalizeSilentAudioDuration(rawValue) {
+    const durationSeconds = Number(rawValue ?? 0);
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        return 1;
+    }
+
+    return Math.min(durationSeconds, silentAudioMaxDurationSeconds);
+}
+
+function buildSilentWavHeader(sampleCount) {
+    const normalizedSampleCount = Math.max(1, Math.ceil(sampleCount));
+    const header = Buffer.alloc(44);
+
+    header.write("RIFF", 0, "ascii");
+    header.writeUInt32LE(36 + normalizedSampleCount, 4);
+    header.write("WAVE", 8, "ascii");
+    header.write("fmt ", 12, "ascii");
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(silentAudioSampleRate, 24);
+    header.writeUInt32LE(silentAudioSampleRate, 28);
+    header.writeUInt16LE(1, 32);
+    header.writeUInt16LE(8, 34);
+    header.write("data", 36, "ascii");
+    header.writeUInt32LE(normalizedSampleCount, 40);
+
+    return header;
+}
+
+function parseByteRange(rangeHeader, totalLength) {
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader ?? "");
+    if (!match) return null;
+
+    const [, startValue, endValue] = match;
+    if (!startValue && !endValue) return null;
+
+    let start;
+    let end;
+
+    if (!startValue) {
+        const suffixLength = Number(endValue);
+        if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null;
+        start = Math.max(totalLength - suffixLength, 0);
+        end = totalLength - 1;
+    } else {
+        start = Number(startValue);
+        end = endValue ? Number(endValue) : totalLength - 1;
+    }
+
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+    if (start < 0 || start >= totalLength || end < start) return null;
+
+    return {
+        start,
+        end: Math.min(end, totalLength - 1),
+    };
+}
+
+function streamSilentWavResponse(response, { start, end, header }) {
+    let offset = start;
+
+    const writeNextChunk = () => {
+        if (offset > end) {
+            response.end();
+            return;
+        }
+
+        let chunk;
+        if (offset < header.length) {
+            const headerEnd = Math.min(header.length - 1, end);
+            chunk = header.subarray(offset, headerEnd + 1);
+        } else {
+            const remaining = end - offset + 1;
+            chunk = Buffer.alloc(Math.min(silentAudioChunkSizeBytes, remaining), 128);
+        }
+
+        offset += chunk.length;
+        if (response.write(chunk)) {
+            writeNextChunk();
+            return;
+        }
+
+        response.once("drain", writeNextChunk);
+    };
+
+    writeNextChunk();
+}
+
+function serveSilentAudio(request, response, url) {
+    const durationSeconds = normalizeSilentAudioDuration(url.searchParams.get("duration"));
+    const sampleCount = Math.max(1, Math.ceil(durationSeconds * silentAudioSampleRate));
+    const header = buildSilentWavHeader(sampleCount);
+    const totalLength = header.length + sampleCount;
+    const byteRange = parseByteRange(request.headers.range, totalLength);
+    const start = byteRange?.start ?? 0;
+    const end = byteRange?.end ?? totalLength - 1;
+    const statusCode = byteRange ? 206 : 200;
+
+    response.writeHead(statusCode, {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Length": end - start + 1,
+        "Content-Type": "audio/wav",
+        ...(byteRange ? { "Content-Range": `bytes ${start}-${end}/${totalLength}` } : {}),
+    });
+
+    if (request.method === "HEAD") {
+        response.end();
+        return;
+    }
+
+    streamSilentWavResponse(response, { start, end, header });
 }
 
 function getRequestOrigin(request) {
@@ -485,6 +603,11 @@ const server = http.createServer((request, response) => {
     if (url.pathname === "/api/remote/health") {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.end(JSON.stringify({ ok: true, rooms: rooms.size }));
+        return;
+    }
+
+    if (url.pathname === "/api/remote/silent.wav") {
+        serveSilentAudio(request, response, url);
         return;
     }
 

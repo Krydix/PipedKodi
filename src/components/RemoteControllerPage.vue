@@ -312,6 +312,14 @@ function sendControl(action, payload = {}) {
     remoteClient?.send("control", { action, ...payload });
 }
 
+function syncMediaSessionPosition() {
+    updateRemoteMediaSession({
+        ...currentMedia.value,
+        ...playerState.value,
+        currentTime: getLivePlayerPosition(),
+    });
+}
+
 function applyRemotePayload(payload) {
     if (!payload) return;
 
@@ -321,10 +329,7 @@ function applyRemotePayload(payload) {
         duration: payload.duration ?? currentMedia.value?.duration ?? 0,
     };
 
-    updateRemoteMediaSession({
-        ...currentMedia.value,
-        ...playerState.value,
-    });
+    syncMediaSessionPosition();
 }
 
 function applyPlayerState(payload) {
@@ -340,10 +345,7 @@ function applyPlayerState(payload) {
         scrubberPosition.value = getLivePlayerPosition();
     }
 
-    updateRemoteMediaSession({
-        ...currentMedia.value,
-        ...playerState.value,
-    });
+    syncMediaSessionPosition();
 }
 
 function getLivePlayerPosition() {
@@ -367,16 +369,20 @@ function getLivePlayerPosition() {
 }
 
 function syncScrubberPosition() {
-    if (isScrubbing.value) return;
-    scrubberPosition.value = getLivePlayerPosition();
+    if (!isScrubbing.value) {
+        scrubberPosition.value = getLivePlayerPosition();
+    }
+
+    syncMediaSessionPosition();
 }
 
 async function startLockScreenControls() {
-    await ensureRemoteMediaPlayback();
-    updateRemoteMediaSession({
+    await ensureRemoteMediaPlayback({
         ...currentMedia.value,
         ...playerState.value,
+        currentTime: getLivePlayerPosition(),
     });
+    syncMediaSessionPosition();
 }
 
 function togglePlayback() {

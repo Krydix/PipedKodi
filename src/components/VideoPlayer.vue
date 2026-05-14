@@ -118,6 +118,7 @@ const showCurrentVolume = ref(false);
 let hideCurrentVolumeTimeout = null;
 const playbackSpeedInput = ref(null);
 const error = ref(0);
+let remoteAutoplayInFlight = false;
 
 let shakaLib = null;
 let playerInstance = null;
@@ -359,6 +360,35 @@ function setPaused(paused) {
     });
 }
 
+async function attemptRemoteAutoplay(el, { allowMutedFallback = true } = {}) {
+    if (!el || route.query.remoteRole !== "player" || !el.paused || remoteAutoplayInFlight) return;
+
+    remoteAutoplayInFlight = true;
+    const previousMuted = el.muted;
+
+    try {
+        await el.play();
+    } catch (error) {
+        if (!allowMutedFallback) {
+            console.error("Unable to start remote playback.", error);
+            return;
+        }
+
+        try {
+            el.muted = true;
+            await el.play();
+            window.setTimeout(() => {
+                el.muted = previousMuted;
+            }, 0);
+        } catch (mutedError) {
+            el.muted = previousMuted;
+            console.error("Unable to start remote playback.", mutedError);
+        }
+    } finally {
+        remoteAutoplayInFlight = false;
+    }
+}
+
 function getCurrentTime() {
     return videoEl.value?.currentTime ?? 0;
 }
@@ -573,6 +603,10 @@ async function setPlayerAttrs(localPlayer, el, uri, mime, shaka) {
 
             applyPreferredTextTrack();
             await setupThumbnailTrack();
+
+            if (route.query.remoteRole === "player" && el.paused) {
+                await attemptRemoteAutoplay(el);
+            }
         })
         .catch(e => {
             console.error(e);
@@ -762,11 +796,12 @@ async function loadVideo() {
         });
 
         el.addEventListener("loadedmetadata", () => {
-            // Remote TV playback needs an explicit play attempt after the source is ready.
-            if (route.query.remoteRole === "player" && el.paused) {
-                setPaused(false);
-            }
+            void attemptRemoteAutoplay(el);
             emit("playstatechange", el.paused);
+        });
+
+        el.addEventListener("canplay", () => {
+            void attemptRemoteAutoplay(el);
         });
     }
 }

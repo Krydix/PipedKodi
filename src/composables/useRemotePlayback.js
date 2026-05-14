@@ -12,38 +12,12 @@ const REMOTE_RELAY_STORAGE_KEY = "remoteRelayUrl";
 const DEFAULT_REMOTE_SESSION_ID = "living-room";
 const DEFAULT_REMOTE_RELAY_PORT = "8090";
 const REMOTE_RECONNECT_DELAY_MS = 1500;
+const SILENT_WAV_MAX_DURATION_SECONDS = 60 * 60 * 12;
+const SILENT_AUDIO_SEEK_TOLERANCE_SECONDS = 0.75;
 
 let remoteSilentAudio = null;
 let remoteSilentAudioUrl = null;
-
-function writeAsciiString(dataView, offset, value) {
-    for (let index = 0; index < value.length; index++) {
-        dataView.setUint8(offset + index, value.charCodeAt(index));
-    }
-}
-
-function buildSilentWavUrl(durationSeconds = 1) {
-    const sampleRate = 8000;
-    const totalSamples = sampleRate * durationSeconds;
-    const audioBuffer = new ArrayBuffer(44 + totalSamples * 2);
-    const dataView = new DataView(audioBuffer);
-
-    writeAsciiString(dataView, 0, "RIFF");
-    dataView.setUint32(4, 36 + totalSamples * 2, true);
-    writeAsciiString(dataView, 8, "WAVE");
-    writeAsciiString(dataView, 12, "fmt ");
-    dataView.setUint32(16, 16, true);
-    dataView.setUint16(20, 1, true);
-    dataView.setUint16(22, 1, true);
-    dataView.setUint32(24, sampleRate, true);
-    dataView.setUint32(28, sampleRate * 2, true);
-    dataView.setUint16(32, 2, true);
-    dataView.setUint16(34, 16, true);
-    writeAsciiString(dataView, 36, "data");
-    dataView.setUint32(40, totalSamples * 2, true);
-
-    return URL.createObjectURL(new Blob([audioBuffer], { type: "audio/wav" }));
-}
+let remoteSilentAudioUnlocked = false;
 
 function getOrCreateSilentAudioElement() {
     if (typeof document === "undefined") return null;
@@ -51,18 +25,143 @@ function getOrCreateSilentAudioElement() {
 
     remoteSilentAudio = document.createElement("audio");
     remoteSilentAudio.preload = "auto";
-    remoteSilentAudio.loop = true;
+    remoteSilentAudio.loop = false;
     remoteSilentAudio.playsInline = true;
     remoteSilentAudio.volume = 0.001;
     remoteSilentAudio.style.display = "none";
-
-    if (!remoteSilentAudioUrl) {
-        remoteSilentAudioUrl = buildSilentWavUrl();
-    }
-
-    remoteSilentAudio.src = remoteSilentAudioUrl;
     document.body.appendChild(remoteSilentAudio);
     return remoteSilentAudio;
+}
+
+function normalizeSilentAudioDuration(durationSeconds) {
+    const parsedDuration = Number(durationSeconds ?? 0);
+
+    if (!Number.isFinite(parsedDuration) || parsedDuration <= 0) {
+        return 1;
+    }
+
+    return Math.min(parsedDuration, SILENT_WAV_MAX_DURATION_SECONDS);
+}
+
+function getSilentAudioStreamUrl(durationSeconds) {
+    const normalizedDuration = normalizeSilentAudioDuration(durationSeconds);
+    const relayUrl = new URL(getRemoteRelayUrl(), window.location.origin);
+    relayUrl.protocol = relayUrl.protocol === "wss:" ? "https:" : "http:";
+    relayUrl.pathname = "/api/remote/silent.wav";
+    relayUrl.search = "";
+    relayUrl.searchParams.set("duration", String(normalizedDuration));
+    return relayUrl.toString();
+}
+
+function clampSilentAudioPosition(positionSeconds, durationSeconds) {
+    const parsedPosition = Number(positionSeconds ?? 0);
+    if (!Number.isFinite(parsedPosition) || parsedPosition <= 0) {
+        return 0;
+    }
+
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        return parsedPosition;
+    }
+
+    return Math.min(parsedPosition, Math.max(durationSeconds - 0.05, 0));
+}
+
+async function waitForSilentAudioMetadata(audioEl) {
+    if (!audioEl || audioEl.readyState >= 1) return;
+
+    await new Promise((resolve, reject) => {
+        const handleLoad = () => {
+            cleanup();
+            resolve();
+        };
+        const handleError = () => {
+            cleanup();
+            reject(audioEl.error ?? new Error("Unable to load silent audio source."));
+        };
+        const cleanup = () => {
+            audioEl.removeEventListener("loadedmetadata", handleLoad);
+            audioEl.removeEventListener("error", handleError);
+        };
+
+        audioEl.addEventListener("loadedmetadata", handleLoad, { once: true });
+        audioEl.addEventListener("error", handleError, { once: true });
+    });
+}
+
+async function ensureSilentAudioSource(durationSeconds) {
+    const audioEl = getOrCreateSilentAudioElement();
+    if (!audioEl) return null;
+
+    const nextSilentAudioUrl = getSilentAudioStreamUrl(durationSeconds);
+    if (remoteSilentAudioUrl === nextSilentAudioUrl) {
+        return audioEl;
+    }
+
+    const shouldResumePlayback = remoteSilentAudioUnlocked && !audioEl.paused;
+    audioEl.pause();
+
+    remoteSilentAudioUrl = nextSilentAudioUrl;
+    audioEl.src = remoteSilentAudioUrl;
+    audioEl.load();
+
+    try {
+        await waitForSilentAudioMetadata(audioEl);
+    } catch (error) {
+        console.error("Unable to prepare silent remote audio.", error);
+    }
+
+    if (shouldResumePlayback) {
+        try {
+            await audioEl.play();
+        } catch (error) {
+            console.error("Unable to resume silent remote audio.", error);
+        }
+    }
+
+    return audioEl;
+}
+
+async function syncSilentAudioElement(state, { allowPlaybackStart = false } = {}) {
+    const audioEl = await ensureSilentAudioSource(state?.duration);
+    if (!audioEl) return false;
+
+    const playbackRate = Number(state?.playbackRate ?? 1);
+    const normalizedPlaybackRate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1;
+    audioEl.defaultPlaybackRate = normalizedPlaybackRate;
+    audioEl.playbackRate = normalizedPlaybackRate;
+
+    const targetPosition = clampSilentAudioPosition(state?.currentTime ?? 0, state?.duration ?? 0);
+    if (
+        Number.isFinite(targetPosition) &&
+        Math.abs((audioEl.currentTime ?? 0) - targetPosition) > SILENT_AUDIO_SEEK_TOLERANCE_SECONDS
+    ) {
+        try {
+            audioEl.currentTime = targetPosition;
+        } catch (error) {
+            console.error("Unable to seek silent remote audio.", error);
+        }
+    }
+
+    if (state?.paused) {
+        audioEl.pause();
+        return true;
+    }
+
+    if (!allowPlaybackStart && !remoteSilentAudioUnlocked && audioEl.paused) {
+        return true;
+    }
+
+    if (audioEl.paused) {
+        try {
+            await audioEl.play();
+            remoteSilentAudioUnlocked = true;
+        } catch (error) {
+            console.error("Unable to start silent remote audio.", error);
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function getDefaultRemoteRelayUrl() {
@@ -129,17 +228,8 @@ export function buildRemotePlayerUrl(sessionId) {
     return url.toString();
 }
 
-export async function ensureRemoteMediaPlayback() {
-    const audioEl = getOrCreateSilentAudioElement();
-    if (!audioEl) return false;
-
-    try {
-        await audioEl.play();
-        return true;
-    } catch (error) {
-        console.error("Unable to start silent remote audio.", error);
-        return false;
-    }
+export async function ensureRemoteMediaPlayback(state = null) {
+    return syncSilentAudioElement(state, { allowPlaybackStart: true });
 }
 
 export function stopRemoteMediaPlayback() {
@@ -147,6 +237,8 @@ export function stopRemoteMediaPlayback() {
 }
 
 export function updateRemoteMediaSession(state) {
+    void syncSilentAudioElement(state);
+
     if (!("mediaSession" in navigator)) return;
 
     navigator.mediaSession.playbackState = state?.paused ? "paused" : "playing";
