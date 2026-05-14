@@ -682,6 +682,7 @@ function buildRemoteMediaPayload() {
         duration: videoPlayer.value?.getDuration?.() ?? video.value.duration,
         currentTime: videoPlayer.value?.getCurrentTime?.() ?? currentTime.value,
         paused: videoPlayer.value?.isPaused?.() ?? true,
+        buffering: videoPlayer.value?.isBuffering?.() ?? false,
         playbackRate: videoPlayer.value?.getPlaybackRate?.() ?? 1,
         query: {
             ...route.query,
@@ -722,8 +723,16 @@ function sendRemotePlayerState(force = false, extraState = {}) {
     });
 }
 
-function onRemotePlaybackStateChange(paused) {
-    sendRemotePlayerState(true, { paused });
+function onRemotePlaybackStateChange(state) {
+    const nextState =
+        typeof state === "boolean"
+            ? { paused: state, buffering: false }
+            : {
+                  paused: Boolean(state?.paused),
+                  buffering: Boolean(state?.buffering),
+              };
+
+    sendRemotePlayerState(true, nextState);
 }
 
 function applyRemoteLoad(remoteMedia) {

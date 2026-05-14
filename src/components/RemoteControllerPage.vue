@@ -293,6 +293,7 @@ const playerState = ref({
     currentTime: 0,
     duration: 0,
     paused: true,
+    buffering: false,
     playbackRate: 1,
     updatedAt: 0,
 });
@@ -327,13 +328,20 @@ function syncMediaSessionPosition() {
     updateRemoteMediaSession(getRemoteMediaState());
 }
 
+function isPlayerEffectivelyPaused() {
+    return Boolean(playerState.value.paused || playerState.value.buffering);
+}
+
 async function maybeStartLockScreenControls() {
     if (!lockScreenActivationRequested || lockScreenActivationInFlight) return false;
 
     const mediaState = getRemoteMediaState();
     const duration = Number(mediaState.duration ?? 0);
     const hasActivePlayback =
-        Boolean(mediaState.title || mediaState.videoId || mediaState.query?.v) && duration > 0 && !mediaState.paused;
+        Boolean(mediaState.title || mediaState.videoId || mediaState.query?.v) &&
+        duration > 0 &&
+        !mediaState.paused &&
+        !mediaState.buffering;
 
     if (!hasActivePlayback) {
         syncMediaSessionPosition();
@@ -418,7 +426,7 @@ function getLivePlayerPosition() {
     const baseTime = Number(playerState.value.currentTime ?? 0);
     const duration = Number(playerState.value.duration ?? currentMedia.value?.duration ?? 0);
 
-    if (playerState.value.paused) {
+    if (isPlayerEffectivelyPaused()) {
         return Math.min(baseTime, duration || Number.POSITIVE_INFINITY);
     }
 

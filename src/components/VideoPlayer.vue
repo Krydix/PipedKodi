@@ -119,6 +119,7 @@ let hideCurrentVolumeTimeout = null;
 const playbackSpeedInput = ref(null);
 const error = ref(0);
 let remoteAutoplayInFlight = false;
+const isBuffering = ref(false);
 
 let shakaLib = null;
 let playerInstance = null;
@@ -399,6 +400,26 @@ function getDuration() {
 
 function isPaused() {
     return videoEl.value?.paused ?? true;
+}
+
+function emitPlaybackState(overrides = {}) {
+    const el = videoEl.value;
+
+    emit("playstatechange", {
+        paused: overrides.paused ?? (el?.paused ?? true),
+        buffering: overrides.buffering ?? isBuffering.value,
+    });
+}
+
+function setBuffering(nextBuffering) {
+    if (isBuffering.value === nextBuffering) return;
+
+    isBuffering.value = nextBuffering;
+    emitPlaybackState({ buffering: nextBuffering });
+}
+
+function getIsBuffering() {
+    return isBuffering.value;
 }
 
 function getPlaybackRate() {
@@ -784,20 +805,52 @@ async function loadVideo() {
         });
 
         el.addEventListener("ended", () => {
+            setBuffering(false);
             emit("ended");
         });
 
         el.addEventListener("play", () => {
-            emit("playstatechange", false);
+            emitPlaybackState({ paused: false });
         });
 
         el.addEventListener("pause", () => {
-            emit("playstatechange", true);
+            setBuffering(false);
+            emitPlaybackState({ paused: true, buffering: false });
+        });
+
+        el.addEventListener("playing", () => {
+            setBuffering(false);
+            emitPlaybackState({ paused: false, buffering: false });
+        });
+
+        el.addEventListener("waiting", () => {
+            if (!el.paused) {
+                setBuffering(true);
+            }
+        });
+
+        el.addEventListener("stalled", () => {
+            if (!el.paused) {
+                setBuffering(true);
+            }
+        });
+
+        el.addEventListener("seeking", () => {
+            if (!el.paused) {
+                setBuffering(true);
+            }
+        });
+
+        el.addEventListener("seeked", () => {
+            if (el.paused || el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+                setBuffering(false);
+            }
         });
 
         el.addEventListener("loadedmetadata", () => {
             void attemptRemoteAutoplay(el);
-            emit("playstatechange", el.paused);
+            setBuffering(false);
+            emitPlaybackState({ paused: el.paused, buffering: false });
         });
 
         el.addEventListener("canplay", () => {
@@ -1000,6 +1053,7 @@ defineExpose({
     getCurrentTime,
     getDuration,
     isPaused,
+    isBuffering: getIsBuffering,
     getPlaybackRate,
     isFullScreenEnabled: () => uiInstance?.getControls()?.isFullScreenEnabled(),
 });

@@ -562,6 +562,7 @@ function sanitizePlayerState(payload, currentMedia) {
         currentTime: Number(payload.currentTime ?? 0),
         duration: Number(payload.duration ?? currentMedia?.duration ?? 0),
         paused: Boolean(payload.paused),
+        buffering: Boolean(payload.buffering),
         playbackRate: Number(payload.playbackRate ?? 1),
         updatedAt: Date.now(),
     };

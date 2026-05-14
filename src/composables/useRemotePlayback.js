@@ -128,7 +128,7 @@ async function syncSilentAudioElement(state, { allowPlaybackStart = false } = {}
     audioEl.defaultPlaybackRate = normalizedPlaybackRate;
     audioEl.playbackRate = normalizedPlaybackRate;
 
-    const shouldBePlaying = !state?.paused;
+    const shouldBePlaying = !state?.paused && !state?.buffering;
 
     if (shouldBePlaying && audioEl.paused) {
         if (!allowPlaybackStart && !remoteSilentAudioUnlocked) {
@@ -165,7 +165,7 @@ async function syncSilentAudioElement(state, { allowPlaybackStart = false } = {}
         }
     }
 
-    if (state?.paused) {
+    if (state?.paused || state?.buffering) {
         audioEl.pause();
         return true;
     }
@@ -250,7 +250,7 @@ export function updateRemoteMediaSession(state) {
 
     if (!("mediaSession" in navigator)) return;
 
-    navigator.mediaSession.playbackState = state?.paused ? "paused" : "playing";
+    navigator.mediaSession.playbackState = state?.paused || state?.buffering ? "paused" : "playing";
 
     if (typeof MediaMetadata !== "undefined") {
         navigator.mediaSession.metadata = state?.title
