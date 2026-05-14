@@ -11,11 +11,15 @@ const host = process.env.HOST ?? "0.0.0.0";
 const pipedApiBaseUrl = process.env.PIPED_API_URL ?? "https://api.piped.private.coffee";
 const ytDlpBin = process.env.YT_DLP_BIN ?? "yt-dlp";
 const ytDlpTimeoutMs = Number(process.env.YT_DLP_TIMEOUT_MS ?? 30000);
+const kodiRequestTimeoutMs = Number(process.env.KODI_REQUEST_TIMEOUT_MS ?? 5000);
+const kodiPollIntervalMs = Number(process.env.KODI_POLL_INTERVAL_MS ?? 1000);
+const kodiBufferingGraceMs = Number(process.env.KODI_BUFFERING_GRACE_MS ?? 12000);
 const silentAudioSampleRate = 8000;
 const silentAudioMaxDurationSeconds = 60 * 60 * 12;
 const silentAudioChunkSizeBytes = 64 * 1024;
 const rooms = new Map();
 const ytDlpCache = new Map();
+const kodiStreamCache = new Map();
 
 function applyCorsHeaders(response) {
     response.setHeader("Access-Control-Allow-Origin", "*");
@@ -376,6 +380,38 @@ async function resolveYtDlpVideo(videoId, request) {
     return payload;
 }
 
+async function resolveKodiStreamUrl(videoId) {
+    const cachedEntry = kodiStreamCache.get(videoId);
+    if (cachedEntry && cachedEntry.expiresAt > Date.now()) {
+        return cachedEntry.url;
+    }
+
+    const { stdout } = await execFileAsync(
+        ytDlpBin,
+        ["-f", "best[ext=mp4]/best", "-g", "--no-playlist", `https://www.youtube.com/watch?v=${videoId}`],
+        {
+            maxBuffer: 2 * 1024 * 1024,
+            timeout: ytDlpTimeoutMs,
+        },
+    );
+
+    const streamUrl = String(stdout)
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .find(Boolean);
+
+    if (!streamUrl) {
+        throw new Error("yt-dlp did not return a playable Kodi stream URL.");
+    }
+
+    kodiStreamCache.set(videoId, {
+        url: streamUrl,
+        expiresAt: Date.now() + 5 * 60 * 1000,
+    });
+
+    return streamUrl;
+}
+
 async function serveYtDlpStream(request, response, videoId) {
     try {
         const payload = await resolveYtDlpVideo(videoId, request);
@@ -498,10 +534,553 @@ function getOrCreateRoom(sessionId) {
             clients: new Map(),
             media: null,
             playerState: null,
+            playbackTarget: "player",
+            sponsorSettings: null,
+            kodi: {
+                config: null,
+                pollTimer: null,
+                lastPolledTime: null,
+                awaitingPlaybackResume: false,
+                bufferingUntil: 0,
+                pendingSeekTime: null,
+                sponsorSegments: [],
+                skippedSponsorSegments: new Set(),
+                status: {
+                    configured: false,
+                    connected: false,
+                    error: null,
+                },
+            },
         });
     }
 
     return rooms.get(sessionId);
+}
+
+function sanitizeKodiUrl(rawValue) {
+    if (typeof rawValue !== "string") return null;
+
+    try {
+        const url = new URL(rawValue.trim());
+        if (!["http:", "https:"].includes(url.protocol)) return null;
+        if (!url.pathname || url.pathname === "/") {
+            url.pathname = "/jsonrpc";
+        }
+        return url.toString();
+    } catch {
+        return null;
+    }
+}
+
+function sanitizeKodiConfig(payload) {
+    if (!payload || typeof payload !== "object") return null;
+
+    const address = sanitizeKodiUrl(payload.address);
+    if (!address) return null;
+
+    return {
+        address,
+        username: typeof payload.username === "string" ? payload.username : "",
+        password: typeof payload.password === "string" ? payload.password : "",
+    };
+}
+
+function sanitizeSponsorSettings(payload) {
+    if (!payload || typeof payload !== "object") return null;
+
+    const skipOptions = {};
+    if (payload.skipOptions && typeof payload.skipOptions === "object") {
+        Object.entries(payload.skipOptions).forEach(([key, value]) => {
+            if (typeof value === "string" && ["no", "button", "auto"].includes(value)) {
+                skipOptions[key] = value;
+            }
+        });
+    }
+
+    return {
+        enabled: payload.enabled !== false,
+        minSegmentLength: Math.max(Number(payload.minSegmentLength ?? 0) || 0, 0),
+        skipOptions,
+    };
+}
+
+function sanitizeSettingsPayload(payload) {
+    if (!payload || typeof payload !== "object") return null;
+
+    return {
+        playbackTarget: payload.playbackTarget === "kodi" ? "kodi" : "player",
+        kodiConfig: sanitizeKodiConfig(payload.kodiConfig),
+        sponsorSettings: sanitizeSponsorSettings(payload.sponsorSettings),
+    };
+}
+
+function buildKodiAuthorizationHeader(config) {
+    if (!config?.username && !config?.password) return null;
+
+    const encoded = Buffer.from(`${config.username ?? ""}:${config.password ?? ""}`).toString("base64");
+    return `Basic ${encoded}`;
+}
+
+async function callKodiJsonRpc(config, method, params = undefined) {
+    if (!config?.address) throw new Error("Kodi is not configured.");
+
+    const headers = {
+        "Content-Type": "application/json",
+    };
+
+    const authorization = buildKodiAuthorizationHeader(config);
+    if (authorization) {
+        headers.Authorization = authorization;
+    }
+
+    const signal = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(kodiRequestTimeoutMs) : undefined;
+    const response = await fetch(config.address, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+            jsonrpc: "2.0",
+            method,
+            params,
+            id: Date.now(),
+        }),
+        signal,
+    });
+
+    if (!response.ok) {
+        throw new Error(`Kodi request failed with HTTP ${response.status}.`);
+    }
+
+    const payload = await response.json();
+    if (payload?.error) {
+        throw new Error(payload.error.message ?? "Kodi returned a JSON-RPC error.");
+    }
+
+    return payload?.result;
+}
+
+function toKodiTime(seconds) {
+    const totalMilliseconds = Math.max(0, Math.round(Number(seconds ?? 0) * 1000));
+    const hours = Math.floor(totalMilliseconds / 3_600_000);
+    const minutes = Math.floor((totalMilliseconds % 3_600_000) / 60_000);
+    const wholeSeconds = Math.floor((totalMilliseconds % 60_000) / 1000);
+    const milliseconds = totalMilliseconds % 1000;
+
+    return {
+        hours,
+        minutes,
+        seconds: wholeSeconds,
+        milliseconds,
+    };
+}
+
+function toKodiSeekValue(seconds) {
+    return {
+        time: toKodiTime(seconds),
+    };
+}
+
+function fromKodiTime(value) {
+    if (!value || typeof value !== "object") return 0;
+
+    return Math.max(
+        0,
+        (
+        Number(value.hours ?? 0) * 3600 +
+        Number(value.minutes ?? 0) * 60 +
+        Number(value.seconds ?? 0) +
+        Number(value.milliseconds ?? 0) / 1000
+        ),
+    );
+}
+
+function getSelectedSponsorCategories(settings) {
+    if (!settings?.enabled) return [];
+
+    const skipOptions = settings.skipOptions ?? {};
+    const selected = Object.keys(skipOptions).filter(key => skipOptions[key] !== "no");
+    return selected;
+}
+
+async function fetchKodiSponsorSegments(videoId, sponsorSettings) {
+    const selectedCategories = getSelectedSponsorCategories(sponsorSettings);
+    if (selectedCategories.length === 0) return [];
+
+    const url = new URL(`/sponsors/${videoId}`, pipedApiBaseUrl);
+    url.searchParams.set("category", JSON.stringify(selectedCategories));
+
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`SponsorBlock request failed with HTTP ${response.status}.`);
+    }
+
+    const payload = await response.json();
+    const minSegmentLength = Math.max(Number(sponsorSettings?.minSegmentLength ?? 0) || 0, 0);
+
+    return (payload?.segments ?? []).filter(segment => {
+        const range = Array.isArray(segment?.segment) ? segment.segment : null;
+        if (!range || range.length < 2) return false;
+        const length = Number(range[1] ?? 0) - Number(range[0] ?? 0);
+        return length >= minSegmentLength;
+    });
+}
+
+function getKodiStatus(room) {
+    return {
+        configured: Boolean(room.kodi?.config),
+        connected: Boolean(room.kodi?.status?.connected),
+        error: room.kodi?.status?.error ?? null,
+    };
+}
+
+function buildSessionState(room) {
+    return {
+        media: room.media,
+        playerState: room.playerState,
+        peers: getPeerCounts(room),
+        playbackTarget: room.playbackTarget,
+        kodi: getKodiStatus(room),
+    };
+}
+
+function broadcastSessionState(room, excludeSocket = null) {
+    broadcast(
+        room,
+        {
+            type: "session_state",
+            payload: buildSessionState(room),
+        },
+        excludeSocket,
+    );
+}
+
+function updateKodiStatus(room, nextStatus) {
+    const previous = room.kodi.status ?? {};
+    const normalized = {
+        configured: Boolean(room.kodi?.config),
+        connected: Boolean(nextStatus?.connected),
+        error: nextStatus?.error ?? null,
+    };
+
+    room.kodi.status = normalized;
+
+    return (
+        previous.configured !== normalized.configured ||
+        previous.connected !== normalized.connected ||
+        previous.error !== normalized.error
+    );
+}
+
+function stopKodiPolling(room) {
+    if (room.kodi?.pollTimer) {
+        clearInterval(room.kodi.pollTimer);
+        room.kodi.pollTimer = null;
+    }
+
+    room.kodi.lastPolledTime = null;
+    room.kodi.awaitingPlaybackResume = false;
+    room.kodi.bufferingUntil = 0;
+    room.kodi.pendingSeekTime = null;
+}
+
+function maybeDisposeRoom(sessionId) {
+    const room = rooms.get(sessionId);
+    if (room && room.clients.size === 0) {
+        stopKodiPolling(room);
+        rooms.delete(sessionId);
+    }
+}
+
+function publishPlayerState(room, nextState, excludeSocket = null) {
+    room.playerState = nextState;
+    broadcast(room, { type: "player_state", payload: room.playerState }, excludeSocket);
+}
+
+async function getKodiPlayerId(config) {
+    const activePlayers = await callKodiJsonRpc(config, "Player.GetActivePlayers");
+    const players = Array.isArray(activePlayers) ? activePlayers : [];
+    const videoPlayer = players.find(player => player?.type === "video") ?? players[0];
+    return typeof videoPlayer?.playerid === "number" ? videoPlayer.playerid : null;
+}
+
+async function maybeSkipKodiSponsorSegment(room, playerId, currentTime) {
+    const segments = Array.isArray(room.kodi?.sponsorSegments) ? room.kodi.sponsorSegments : [];
+    if (segments.length === 0) return null;
+
+    for (let index = 0; index < segments.length; index += 1) {
+        const segment = segments[index];
+        const range = Array.isArray(segment?.segment) ? segment.segment : null;
+        if (!range || range.length < 2) continue;
+        if (room.kodi.skippedSponsorSegments.has(index)) continue;
+
+        const [segmentStart, segmentEnd] = range.map(value => Number(value ?? 0));
+        if (!Number.isFinite(segmentStart) || !Number.isFinite(segmentEnd)) continue;
+
+        const option = room.sponsorSettings?.skipOptions?.[segment.category];
+        const shouldAutoSkip = (option ?? "auto") === "auto";
+        if (!shouldAutoSkip) continue;
+
+        if (currentTime > segmentEnd + 1) {
+            room.kodi.skippedSponsorSegments.add(index);
+            continue;
+        }
+
+        if (currentTime >= segmentStart && currentTime < segmentEnd) {
+            room.kodi.skippedSponsorSegments.add(index);
+            await callKodiJsonRpc(room.kodi.config, "Player.Seek", {
+                playerid: playerId,
+                value: toKodiSeekValue(segmentEnd),
+            });
+            room.kodi.awaitingPlaybackResume = true;
+            room.kodi.bufferingUntil = Date.now() + kodiBufferingGraceMs;
+            room.kodi.pendingSeekTime = segmentEnd;
+            room.kodi.lastPolledTime = segmentEnd;
+            return segmentEnd;
+        }
+    }
+
+    return null;
+}
+
+async function syncKodiRoomState(sessionId, room) {
+    if (room.playbackTarget !== "kodi" || !room.kodi?.config) return;
+
+    try {
+        const playerId = await getKodiPlayerId(room.kodi.config);
+        const statusChanged = updateKodiStatus(room, { connected: true, error: null });
+        if (statusChanged) {
+            broadcastSessionState(room);
+        }
+
+        if (playerId === null) {
+            if (room.playerState?.videoId) {
+                publishPlayerState(room, {
+                    ...room.playerState,
+                    paused: true,
+                    buffering: false,
+                    updatedAt: Date.now(),
+                });
+            }
+            return;
+        }
+
+        const properties = await callKodiJsonRpc(room.kodi.config, "Player.GetProperties", {
+            playerid: playerId,
+            properties: ["time", "totaltime", "speed", "percentage"],
+        });
+
+        let currentTime = fromKodiTime(properties?.time);
+        const duration = fromKodiTime(properties?.totaltime) || Number(room.media?.duration ?? 0);
+        const speed = Number(properties?.speed ?? 0);
+        const previousTime = Number(room.kodi.lastPolledTime ?? currentTime);
+        const progressed = currentTime > previousTime + 0.2;
+        room.kodi.lastPolledTime = currentTime;
+
+        const skippedTo = await maybeSkipKodiSponsorSegment(room, playerId, currentTime);
+        if (typeof skippedTo === "number") {
+            currentTime = skippedTo;
+        }
+
+        const now = Date.now();
+        if (room.kodi.awaitingPlaybackResume && speed > 0 && progressed) {
+            room.kodi.awaitingPlaybackResume = false;
+            room.kodi.bufferingUntil = 0;
+            room.kodi.pendingSeekTime = null;
+        }
+
+        if (room.kodi.bufferingUntil > 0 && room.kodi.bufferingUntil <= now) {
+            room.kodi.bufferingUntil = 0;
+        }
+
+        const buffering = room.kodi.awaitingPlaybackResume || room.kodi.bufferingUntil > now;
+        publishPlayerState(room, {
+            videoId: room.media?.videoId ?? room.playerState?.videoId ?? null,
+            currentTime,
+            duration,
+            paused: buffering ? true : speed === 0,
+            buffering,
+            playbackRate: speed > 0 ? speed : 1,
+            updatedAt: now,
+        });
+    } catch (error) {
+        const statusChanged = updateKodiStatus(room, {
+            connected: false,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        if (statusChanged) {
+            broadcastSessionState(room);
+        }
+    }
+}
+
+function ensureKodiPolling(sessionId, room) {
+    if (room.playbackTarget !== "kodi" || !room.kodi?.config) return;
+    if (room.kodi.pollTimer) return;
+
+    room.kodi.pollTimer = setInterval(() => {
+        void syncKodiRoomState(sessionId, room);
+    }, kodiPollIntervalMs);
+
+    void syncKodiRoomState(sessionId, room);
+}
+
+async function openKodiMedia(sessionId, room, media) {
+    if (!room.kodi?.config) {
+        const statusChanged = updateKodiStatus(room, {
+            connected: false,
+            error: "Kodi is not configured for this room.",
+        });
+        if (statusChanged) {
+            broadcastSessionState(room);
+        }
+        return;
+    }
+
+    try {
+        const streamUrl = await resolveKodiStreamUrl(media.videoId);
+        room.kodi.sponsorSegments = await fetchKodiSponsorSegments(media.videoId, room.sponsorSettings).catch(() => []);
+        room.kodi.skippedSponsorSegments = new Set();
+        room.kodi.awaitingPlaybackResume = true;
+        room.kodi.bufferingUntil = Date.now() + kodiBufferingGraceMs;
+        room.kodi.pendingSeekTime = 0;
+        room.kodi.lastPolledTime = 0;
+
+        await callKodiJsonRpc(room.kodi.config, "Player.Open", {
+            item: {
+                file: streamUrl,
+            },
+        });
+
+        publishPlayerState(room, {
+            videoId: media.videoId,
+            currentTime: 0,
+            duration: Number(media.duration ?? 0),
+            paused: true,
+            buffering: true,
+            playbackRate: 1,
+            updatedAt: Date.now(),
+        });
+
+        const statusChanged = updateKodiStatus(room, { connected: true, error: null });
+        if (statusChanged) {
+            broadcastSessionState(room);
+        }
+
+        ensureKodiPolling(sessionId, room);
+        void syncKodiRoomState(sessionId, room);
+    } catch (error) {
+        const statusChanged = updateKodiStatus(room, {
+            connected: false,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        if (statusChanged) {
+            broadcastSessionState(room);
+        }
+    }
+}
+
+async function sendKodiControl(sessionId, room, control) {
+    if (!room.kodi?.config || !control || typeof control !== "object") return;
+
+    try {
+        const action = control.action;
+        const playerId = ["up", "down", "left", "right", "select", "back", "home"].includes(action)
+            ? null
+            : await getKodiPlayerId(room.kodi.config);
+
+        switch (action) {
+            case "play":
+                if (playerId !== null) {
+                    await callKodiJsonRpc(room.kodi.config, "Player.PlayPause", { playerid: playerId, play: true });
+                    room.kodi.awaitingPlaybackResume = false;
+                    room.kodi.bufferingUntil = 0;
+                }
+                break;
+            case "pause":
+                if (playerId !== null) {
+                    await callKodiJsonRpc(room.kodi.config, "Player.PlayPause", { playerid: playerId, play: false });
+                    room.kodi.awaitingPlaybackResume = false;
+                    room.kodi.bufferingUntil = 0;
+                }
+                break;
+            case "seek": {
+                if (playerId === null) break;
+                const targetTime = Math.max(0, Number(control.currentTime ?? 0));
+                await callKodiJsonRpc(room.kodi.config, "Player.Seek", {
+                    playerid: playerId,
+                    value: toKodiSeekValue(targetTime),
+                });
+                room.kodi.awaitingPlaybackResume = true;
+                room.kodi.bufferingUntil = Date.now() + kodiBufferingGraceMs;
+                room.kodi.pendingSeekTime = targetTime;
+                publishPlayerState(room, {
+                    videoId: room.media?.videoId ?? room.playerState?.videoId ?? null,
+                    currentTime: targetTime,
+                    duration: Number(room.playerState?.duration ?? room.media?.duration ?? 0),
+                    paused: true,
+                    buffering: true,
+                    playbackRate: 1,
+                    updatedAt: Date.now(),
+                });
+                break;
+            }
+            case "seekBy": {
+                if (playerId === null) break;
+                const baseTime = Number(room.playerState?.currentTime ?? 0);
+                const duration = Number(room.playerState?.duration ?? room.media?.duration ?? 0);
+                const targetTime = Math.max(0, duration > 0 ? Math.min(baseTime + Number(control.delta ?? 0), duration) : baseTime + Number(control.delta ?? 0));
+                await callKodiJsonRpc(room.kodi.config, "Player.Seek", {
+                    playerid: playerId,
+                    value: toKodiSeekValue(targetTime),
+                });
+                room.kodi.awaitingPlaybackResume = true;
+                room.kodi.bufferingUntil = Date.now() + kodiBufferingGraceMs;
+                room.kodi.pendingSeekTime = targetTime;
+                publishPlayerState(room, {
+                    videoId: room.media?.videoId ?? room.playerState?.videoId ?? null,
+                    currentTime: targetTime,
+                    duration,
+                    paused: true,
+                    buffering: true,
+                    playbackRate: 1,
+                    updatedAt: Date.now(),
+                });
+                break;
+            }
+            case "up":
+                await callKodiJsonRpc(room.kodi.config, "Input.Up");
+                break;
+            case "down":
+                await callKodiJsonRpc(room.kodi.config, "Input.Down");
+                break;
+            case "left":
+                await callKodiJsonRpc(room.kodi.config, "Input.Left");
+                break;
+            case "right":
+                await callKodiJsonRpc(room.kodi.config, "Input.Right");
+                break;
+            case "select":
+                await callKodiJsonRpc(room.kodi.config, "Input.Select");
+                break;
+            case "back":
+                await callKodiJsonRpc(room.kodi.config, "Input.Back");
+                break;
+            case "home":
+                await callKodiJsonRpc(room.kodi.config, "Input.Home");
+                break;
+            default:
+                return;
+        }
+
+        void syncKodiRoomState(sessionId, room);
+    } catch (error) {
+        const statusChanged = updateKodiStatus(room, {
+            connected: false,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        if (statusChanged) {
+            broadcastSessionState(room);
+        }
+    }
 }
 
 function getPeerCounts(room) {
@@ -522,13 +1101,6 @@ function broadcast(room, value, excludeSocket = null) {
     room.clients.forEach((_role, socket) => {
         if (socket !== excludeSocket) sendJson(socket, value);
     });
-}
-
-function maybeDisposeRoom(sessionId) {
-    const room = rooms.get(sessionId);
-    if (room && room.clients.size === 0) {
-        rooms.delete(sessionId);
-    }
 }
 
 function sanitizeSessionId(rawValue) {
@@ -642,25 +1214,10 @@ websocketServer.on("connection", (socket, _request, sessionId, role) => {
 
     sendJson(socket, {
         type: "session_state",
-        payload: {
-            media: room.media,
-            playerState: room.playerState,
-            peers: getPeerCounts(room),
-        },
+        payload: buildSessionState(room),
     });
 
-    broadcast(
-        room,
-        {
-            type: "session_state",
-            payload: {
-                media: room.media,
-                playerState: room.playerState,
-                peers: getPeerCounts(room),
-            },
-        },
-        socket,
-    );
+    broadcastSessionState(room, socket);
 
     socket.on("message", rawValue => {
         let message;
@@ -671,12 +1228,42 @@ websocketServer.on("connection", (socket, _request, sessionId, role) => {
         }
 
         switch (message.type) {
+            case "settings": {
+                const settings = sanitizeSettingsPayload(message.payload);
+                if (!settings) return;
+
+                room.playbackTarget = settings.playbackTarget;
+                room.sponsorSettings = settings.sponsorSettings;
+                room.kodi.config = settings.kodiConfig;
+                room.kodi.status = {
+                    configured: Boolean(settings.kodiConfig),
+                    connected: room.kodi.status?.connected ?? false,
+                    error: settings.kodiConfig ? null : room.kodi.status?.error ?? null,
+                };
+
+                if (room.playbackTarget === "kodi" && room.kodi.config) {
+                    ensureKodiPolling(sessionId, room);
+                    if (room.media?.videoId) {
+                        void openKodiMedia(sessionId, room, room.media);
+                    }
+                } else {
+                    stopKodiPolling(room);
+                }
+
+                broadcastSessionState(room);
+                break;
+            }
             case "load": {
                 const media = sanitizeLoadPayload(message.payload);
                 if (!media) return;
+                media.playbackTarget = room.playbackTarget;
                 room.media = media;
                 if (room.playerState?.videoId !== media.videoId) room.playerState = null;
                 broadcast(room, { type: "load", payload: room.media });
+
+                if (room.playbackTarget === "kodi") {
+                    void openKodiMedia(sessionId, room, room.media);
+                }
                 break;
             }
             case "player_state": {
@@ -688,7 +1275,11 @@ websocketServer.on("connection", (socket, _request, sessionId, role) => {
             }
             case "control": {
                 if (!message.payload || typeof message.payload !== "object") return;
-                broadcast(room, { type: "control", payload: message.payload }, socket);
+                if (room.playbackTarget === "kodi") {
+                    void sendKodiControl(sessionId, room, message.payload);
+                } else {
+                    broadcast(room, { type: "control", payload: message.payload }, socket);
+                }
                 break;
             }
         }

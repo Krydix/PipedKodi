@@ -44,6 +44,9 @@
                 <router-link to="/remote/player" title="TV player" aria-label="TV player" class="nav-icon-btn"><i-fa6-solid-tv /></router-link>
             </li>
             <li>
+                <router-link to="/preferences#kodi" title="Kodi settings" aria-label="Kodi settings" class="nav-icon-btn">Kodi</router-link>
+            </li>
+            <li>
                 <router-link to="/preferences" :title="$t('titles.preferences')" aria-label="Preferences" class="nav-icon-btn"><i-fa6-solid-gear /></router-link>
             </li>
         </ul>

@@ -2,8 +2,10 @@ PNPM := pnpm
 HOST := 0.0.0.0
 PREVIEW_PORT := 4173
 RELAY_PORT := 8090
+DOCKER_IMAGE ?= pipedkodi:latest
+DOCKERFILE ?= Dockerfile
 
-.PHONY: build build-full relay preview run start kill-ports
+.PHONY: build build-full relay preview run start kill-ports docker
 
 build:
 	$(PNPM) build
@@ -16,6 +18,9 @@ relay:
 
 preview:
 	$(PNPM) preview --host $(HOST) --port $(PREVIEW_PORT) --strictPort
+
+docker:
+	docker build -f $(DOCKERFILE) -t $(DOCKER_IMAGE) .
 
 kill-ports:
 	lsof -tiTCP:$(PREVIEW_PORT) -tiTCP:$(RELAY_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true

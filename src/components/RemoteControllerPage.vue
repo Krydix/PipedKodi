@@ -95,10 +95,74 @@
 
         <!-- Settings toggles -->
         <div class="overflow-hidden rounded-2xl bg-white ring-1 ring-black/5 dark:bg-dark-400 dark:ring-white/8">
-            <label class="flex cursor-pointer items-center justify-between px-4 py-3.5">
-                <span class="text-sm font-medium">Route clicks to TV</span>
+            <label class="flex items-center justify-between px-4 py-3.5">
+                <span class="text-sm font-medium">Route clicks to</span>
+                <select
+                    v-model="remotePlaybackTarget"
+                    class="rounded-lg bg-light-200 px-3 py-1.5 text-sm text-gray-700 dark:bg-dark-300 dark:text-gray-200"
+                >
+                    <option value="player">Web player</option>
+                    <option value="kodi">Kodi</option>
+                </select>
+            </label>
+            <label class="flex cursor-pointer items-center justify-between border-t border-gray-100 px-4 py-3.5 dark:border-dark-100">
+                <span class="text-sm font-medium">Route clicks to remote playback</span>
                 <input v-model="remoteBrowseEnabled" type="checkbox" class="toggle" />
             </label>
+            <div class="border-t border-gray-100 px-4 py-3 text-sm dark:border-dark-100">
+                <div class="flex items-center justify-between gap-3">
+                    <div>
+                        <p class="font-medium text-gray-800 dark:text-gray-100">Active target: {{ activePlaybackTargetLabel }}</p>
+                        <p v-if="isKodiActive" class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                            {{ kodiAddress || "Kodi endpoint not configured" }}
+                        </p>
+                        <p v-if="isKodiActive && kodiStatus.error" class="mt-1 text-xs text-red-600 dark:text-red-400">
+                            {{ kodiStatus.error }}
+                        </p>
+                    </div>
+                    <button
+                        class="rounded-lg bg-light-200 px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-light-300 dark:bg-dark-300 dark:text-gray-200 dark:hover:bg-dark-100"
+                        @click="openKodiSettings"
+                    >
+                        Kodi settings
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div
+            v-if="isKodiActive"
+            class="overflow-hidden rounded-2xl bg-white ring-1 ring-black/5 dark:bg-dark-400 dark:ring-white/8"
+        >
+            <div class="px-4 py-3.5">
+                <p class="text-sm font-semibold">Kodi navigation</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Directional commands are sent to Kodi when this room is using the Kodi backend.
+                </p>
+                <div class="mt-4 flex justify-center">
+                    <div class="grid grid-cols-3 gap-2">
+                        <span />
+                        <button class="ctrl-pad-btn" aria-label="Up" @click="sendControl('up')"><i-fa6-solid-chevron-up /></button>
+                        <span />
+                        <button class="ctrl-pad-btn" aria-label="Left" @click="sendControl('left')"><i-fa6-solid-chevron-left /></button>
+                        <button class="ctrl-pad-center" aria-label="Select" @click="sendControl('select')"><i-fa6-solid-circle-dot /></button>
+                        <button class="ctrl-pad-btn" aria-label="Right" @click="sendControl('right')"><i-fa6-solid-chevron-right /></button>
+                        <span />
+                        <button class="ctrl-pad-btn" aria-label="Down" @click="sendControl('down')"><i-fa6-solid-chevron-down /></button>
+                        <span />
+                    </div>
+                </div>
+                <div class="mt-3 flex justify-center gap-2">
+                    <button class="ctrl-btn" aria-label="Back" @click="sendControl('back')">
+                        <i-fa6-solid-arrow-left />
+                        <span class="text-[10px]">Back</span>
+                    </button>
+                    <button class="ctrl-btn" aria-label="Home" @click="sendControl('home')">
+                        <i-fa6-solid-house />
+                        <span class="text-[10px]">Home</span>
+                    </button>
+                </div>
+            </div>
         </div>
 
         <!-- Description -->
@@ -215,12 +279,17 @@ import { purifyHTML, rewriteDescription } from "@/utils/HtmlUtils";
 import CommentItem from "./CommentItem.vue";
 import ContentItem from "./ContentItem.vue";
 import {
+    buildRemoteSettingsPayload,
     createRemoteClient,
     ensureRemoteMediaPlayback,
     ensureRemoteSessionId,
     getRemoteRelayUrl,
     normalizeRemoteSessionId,
     registerRemoteMediaActions,
+    useKodiAddress,
+    useKodiPassword,
+    useKodiUsername,
+    useRemotePlaybackTarget,
     updateRemoteMediaSession,
     useRemoteBrowseEnabled,
     useRemoteSessionId,
@@ -231,10 +300,20 @@ const router = useRouter();
 
 const remoteSessionId = useRemoteSessionId(null);
 const remoteBrowseEnabled = useRemoteBrowseEnabled(true);
+const remotePlaybackTarget = useRemotePlaybackTarget("player");
+const kodiAddress = useKodiAddress();
+const kodiUsername = useKodiUsername();
+const kodiPassword = useKodiPassword();
 const sessionId = ref(null);
 const connectionStatus = ref("connecting");
 const relayUrl = ref("");
 const currentMedia = ref(null);
+const activePlaybackTarget = ref(remotePlaybackTarget.value === "kodi" ? "kodi" : "player");
+const kodiStatus = ref({
+    configured: false,
+    connected: false,
+    error: null,
+});
 
 // Description
 const videoDescription = ref("");
@@ -335,8 +414,27 @@ const scrubberMax = computed(() => {
     return Number.isFinite(duration) && duration > 0 ? duration : 0;
 });
 
+const isKodiActive = computed(() => activePlaybackTarget.value === "kodi");
+
+const activePlaybackTargetLabel = computed(() => {
+    if (activePlaybackTarget.value === "kodi") {
+        return kodiStatus.value.connected ? "Kodi" : "Kodi (connecting)";
+    }
+
+    return "Web player";
+});
+
 function sendControl(action, payload = {}) {
     remoteClient?.send("control", { action, ...payload });
+}
+
+function syncRemoteSettings() {
+    activePlaybackTarget.value = remotePlaybackTarget.value === "kodi" ? "kodi" : "player";
+    remoteClient?.send("settings", buildRemoteSettingsPayload());
+}
+
+function openKodiSettings() {
+    router.push({ path: "/preferences", hash: "#kodi" });
 }
 
 function getRemoteMediaState() {
@@ -418,6 +516,10 @@ function installLockScreenActivationListeners() {
 function applyRemotePayload(payload) {
     if (!payload) return;
 
+    if (payload.playbackTarget === "kodi") {
+        activePlaybackTarget.value = "kodi";
+    }
+
     currentMedia.value = {
         ...currentMedia.value,
         ...payload,
@@ -497,9 +599,18 @@ function connectRemoteController() {
         role: "controller",
         onStatusChange(status) {
             connectionStatus.value = status;
+            if (status === "connected") {
+                syncRemoteSettings();
+            }
         },
         onMessage(message) {
             if (message.type === "session_state") {
+                activePlaybackTarget.value = message.payload?.playbackTarget === "kodi" ? "kodi" : "player";
+                kodiStatus.value = {
+                    configured: Boolean(message.payload?.kodi?.configured),
+                    connected: Boolean(message.payload?.kodi?.connected),
+                    error: message.payload?.kodi?.error ?? null,
+                };
                 applyRemotePayload(message.payload?.media);
                 applyPlayerState(message.payload?.playerState);
             }
@@ -525,6 +636,12 @@ watch(
     { flush: "post" },
 );
 
+watch([remotePlaybackTarget, kodiAddress, kodiUsername, kodiPassword], () => {
+    if (connectionStatus.value === "connected") {
+        syncRemoteSettings();
+    }
+});
+
 onMounted(async () => {
     const nextSessionId =
         normalizeRemoteSessionId(route.query.session) ??
@@ -535,6 +652,7 @@ onMounted(async () => {
     remoteSessionId.value = nextSessionId;
     remoteBrowseEnabled.value = true;
     relayUrl.value = getRemoteRelayUrl();
+    activePlaybackTarget.value = remotePlaybackTarget.value === "kodi" ? "kodi" : "player";
 
     cleanupMediaActions = registerRemoteMediaActions({
         onPlay: () => sendControl("play"),
@@ -572,6 +690,14 @@ onUnmounted(() => {
 
     .ctrl-btn-primary {
         @apply flex size-14 items-center justify-center rounded-full bg-[#155bd0] text-white shadow-md transition-opacity active:opacity-80;
+    }
+
+    .ctrl-pad-btn {
+        @apply flex size-11 items-center justify-center rounded-xl bg-light-200 text-gray-700 transition-colors active:bg-light-300 dark:bg-dark-300 dark:text-gray-300 dark:active:bg-dark-100;
+    }
+
+    .ctrl-pad-center {
+        @apply flex size-11 items-center justify-center rounded-xl bg-[#155bd0] text-white shadow-md transition-opacity active:opacity-80;
     }
 
     .scrubber {

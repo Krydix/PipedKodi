@@ -1,5 +1,7 @@
 import {
     getPreferenceBoolean,
+    getPreferenceJSON,
+    getPreferenceNumber,
     getPreferenceString,
     setPreference,
     usePreferenceBoolean,
@@ -9,8 +11,13 @@ import {
 const REMOTE_SESSION_STORAGE_KEY = "remoteSessionId";
 const REMOTE_BROWSE_STORAGE_KEY = "remoteBrowseEnabled";
 const REMOTE_RELAY_STORAGE_KEY = "remoteRelayUrl";
+const REMOTE_PLAYBACK_TARGET_STORAGE_KEY = "remotePlaybackTarget";
+const KODI_ADDRESS_STORAGE_KEY = "kodiAddress";
+const KODI_USERNAME_STORAGE_KEY = "kodiUsername";
+const KODI_PASSWORD_STORAGE_KEY = "kodiPassword";
 const DEFAULT_REMOTE_SESSION_ID = "living-room";
 const DEFAULT_REMOTE_RELAY_PORT = "8090";
+const DEFAULT_KODI_ADDRESS = "http://localhost:8080/jsonrpc";
 const REMOTE_RECONNECT_DELAY_MS = 1500;
 const SILENT_WAV_MAX_DURATION_SECONDS = 60 * 60 * 12;
 const SILENT_AUDIO_SEEK_TOLERANCE_SECONDS = 0.75;
@@ -203,6 +210,22 @@ export function useRemoteBrowseEnabled(defaultValue = true) {
     return usePreferenceBoolean(REMOTE_BROWSE_STORAGE_KEY, defaultValue);
 }
 
+export function useRemotePlaybackTarget(defaultValue = "player") {
+    return usePreferenceString(REMOTE_PLAYBACK_TARGET_STORAGE_KEY, defaultValue);
+}
+
+export function useKodiAddress(defaultValue = DEFAULT_KODI_ADDRESS) {
+    return usePreferenceString(KODI_ADDRESS_STORAGE_KEY, defaultValue);
+}
+
+export function useKodiUsername(defaultValue = "") {
+    return usePreferenceString(KODI_USERNAME_STORAGE_KEY, defaultValue);
+}
+
+export function useKodiPassword(defaultValue = "") {
+    return usePreferenceString(KODI_PASSWORD_STORAGE_KEY, defaultValue);
+}
+
 export function getRemoteSessionId(defaultValue = DEFAULT_REMOTE_SESSION_ID) {
     return normalizeRemoteSessionId(getPreferenceString(REMOTE_SESSION_STORAGE_KEY, defaultValue)) ?? defaultValue;
 }
@@ -223,6 +246,26 @@ export function setRemoteRelayUrl(url) {
 
 export function shouldUseRemoteBrowse() {
     return getPreferenceBoolean(REMOTE_BROWSE_STORAGE_KEY, true);
+}
+
+export function getRemotePlaybackTarget(defaultValue = "player") {
+    return getPreferenceString(REMOTE_PLAYBACK_TARGET_STORAGE_KEY, defaultValue) === "kodi" ? "kodi" : "player";
+}
+
+export function buildRemoteSettingsPayload() {
+    return {
+        playbackTarget: getRemotePlaybackTarget(),
+        kodiConfig: {
+            address: getPreferenceString(KODI_ADDRESS_STORAGE_KEY, DEFAULT_KODI_ADDRESS),
+            username: getPreferenceString(KODI_USERNAME_STORAGE_KEY, ""),
+            password: getPreferenceString(KODI_PASSWORD_STORAGE_KEY, ""),
+        },
+        sponsorSettings: {
+            enabled: getPreferenceBoolean("sponsorblock", true),
+            minSegmentLength: Math.max(getPreferenceNumber("minSegmentLength", 0), 0),
+            skipOptions: getPreferenceJSON("skipOptions", {}) ?? {},
+        },
+    };
 }
 
 export function buildRemoteControllerUrl(sessionId) {

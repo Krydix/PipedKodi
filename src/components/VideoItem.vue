@@ -129,6 +129,7 @@ import { numberFormat, timeAgo } from "@/composables/useFormatting.js";
 import { getPreferenceBoolean } from "@/composables/usePreferences.js";
 import { removeVideoFromPlaylist } from "@/composables/usePlaylists.js";
 import {
+    buildRemoteSettingsPayload,
     ensureRemoteSessionId,
     sendRemoteMessageOnce,
     shouldUseRemoteBrowse,
@@ -228,6 +229,11 @@ async function handleWatchSelection(event, target) {
     };
 
     try {
+        await sendRemoteMessageOnce({
+            sessionId,
+            type: "settings",
+            payload: buildRemoteSettingsPayload(),
+        });
         await sendRemoteMessageOnce({
             sessionId,
             type: "load",

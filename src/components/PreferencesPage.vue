@@ -225,6 +225,68 @@
         <PreferenceNumberField id="txtPrefetchLimit" v-model="prefetchLimit" :min="0" @change="onChange" />
     </label>
 
+    <h2 id="kodi" class="text-center">Kodi</h2>
+    <p class="text-center">
+        Route remote room playback through Kodi's JSON-RPC endpoint instead of the built-in web player.
+    </p>
+    <label
+        class="mx-[15vw] my-2 flex items-center justify-between odd:bg-gray-200 max-md:mx-[2vw] dark:odd:bg-dark-800"
+        for="ddlRemotePlaybackTarget"
+    >
+        <strong>Remote playback target</strong>
+        <select
+            id="ddlRemotePlaybackTarget"
+            v-model="remotePlaybackTarget"
+            class="h-8 w-auto bg-gray-300 text-gray-600 dark:bg-dark-400 dark:text-gray-400"
+            @change="onChange($event)"
+        >
+            <option value="player">Web player</option>
+            <option value="kodi">Kodi</option>
+        </select>
+    </label>
+    <label
+        class="mx-[15vw] my-2 flex items-center justify-between odd:bg-gray-200 max-md:mx-[2vw] dark:odd:bg-dark-800"
+        for="txtKodiAddress"
+    >
+        <strong>Kodi JSON-RPC address</strong>
+        <input
+            id="txtKodiAddress"
+            v-model="kodiAddress"
+            class="h-8 w-64 rounded-md bg-gray-300 px-2.5 text-gray-600 focus:shadow-red-400 focus:outline-2 focus:outline-red-500 dark:bg-dark-400 dark:text-gray-400 max-md:w-40"
+            type="url"
+            placeholder="http://localhost:8080/jsonrpc"
+            @change="onChange"
+        />
+    </label>
+    <label
+        class="mx-[15vw] my-2 flex items-center justify-between odd:bg-gray-200 max-md:mx-[2vw] dark:odd:bg-dark-800"
+        for="txtKodiUsername"
+    >
+        <strong>Kodi username</strong>
+        <input
+            id="txtKodiUsername"
+            v-model="kodiUsername"
+            class="h-8 w-48 rounded-md bg-gray-300 px-2.5 text-gray-600 focus:shadow-red-400 focus:outline-2 focus:outline-red-500 dark:bg-dark-400 dark:text-gray-400 max-md:w-32"
+            type="text"
+            autocomplete="username"
+            @change="onChange"
+        />
+    </label>
+    <label
+        class="mx-[15vw] my-2 flex items-center justify-between odd:bg-gray-200 max-md:mx-[2vw] dark:odd:bg-dark-800"
+        for="txtKodiPassword"
+    >
+        <strong>Kodi password</strong>
+        <input
+            id="txtKodiPassword"
+            v-model="kodiPassword"
+            class="h-8 w-48 rounded-md bg-gray-300 px-2.5 text-gray-600 focus:shadow-red-400 focus:outline-2 focus:outline-red-500 dark:bg-dark-400 dark:text-gray-400 max-md:w-32"
+            type="password"
+            autocomplete="current-password"
+            @change="onChange"
+        />
+    </label>
+
     <h2 class="text-center">SponsorBlock</h2>
     <p class="text-center">
         <span v-t="'actions.uses_api_from'" /><a
@@ -475,6 +537,12 @@ import { fetchJson, apiUrl, authApiUrl, getAuthToken, hashCode, isAuthenticated 
 import { getCustomInstances } from "@/composables/useCustomInstances";
 import { download } from "@/composables/useMisc";
 import { getDefaultLanguage } from "@/composables/useFormatting";
+import {
+    useKodiAddress,
+    useKodiPassword,
+    useKodiUsername,
+    useRemotePlaybackTarget,
+} from "@/composables/useRemotePlayback.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -512,6 +580,10 @@ const selectedTheme = usePreferenceString("theme", "dark");
 const autoPlayVideo = usePreferenceBoolean("playerAutoPlay", true);
 const autoDisplayCaptions = usePreferenceBoolean("autoDisplayCaptions", false);
 const autoPlayNextCountdown = usePreferenceNumber("autoPlayNextCountdown", 5);
+const remotePlaybackTarget = useRemotePlaybackTarget("player");
+const kodiAddress = useKodiAddress();
+const kodiUsername = useKodiUsername();
+const kodiPassword = useKodiPassword();
 const listen = usePreferenceBoolean("listen", false);
 const resolutions = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320];
 const preferHls = usePreferenceBoolean("preferHls", false);
