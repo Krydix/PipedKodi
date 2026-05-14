@@ -3,12 +3,9 @@
 
         <!-- Header row -->
         <div class="flex items-center justify-between">
-            <div>
-                <h1 class="text-xl font-semibold tracking-tight">Remote</h1>
-                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-500">
-                    Room <span class="font-mono" v-text="sessionId" />
-                </p>
-            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-500">
+                Room <span class="font-mono" v-text="sessionId" />
+            </p>
             <span
                 class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
                 :class="connectionStatus === 'connected'
@@ -102,14 +99,6 @@
                 <span class="text-sm font-medium">Route clicks to TV</span>
                 <input v-model="remoteBrowseEnabled" type="checkbox" class="toggle" />
             </label>
-            <div class="mx-4 border-t border-gray-100 dark:border-dark-100" />
-            <button
-                class="flex w-full items-center justify-between px-4 py-3.5 text-left text-sm font-medium"
-                @click="startLockScreenControls"
-            >
-                Lock screen controls
-                <i-fa6-solid-chevron-right class="size-3.5 text-gray-400" />
-            </button>
         </div>
 
         <!-- Description -->
@@ -132,6 +121,31 @@
                 class="px-4 pb-4 text-sm leading-relaxed text-gray-700 dark:text-gray-300 [&_a]:text-[#155bd0] [&_a]:underline dark:[&_a]:text-[#5b9cf6]"
                 v-html="purifiedDescription"
             />
+        </div>
+
+        <!-- Recommendations -->
+        <div
+            v-if="relatedStreams.length > 0"
+            class="overflow-hidden rounded-2xl bg-white ring-1 ring-black/5 dark:bg-dark-400 dark:ring-white/8"
+        >
+            <button
+                class="flex w-full items-center justify-between px-4 py-3.5 text-left"
+                @click="showRecommendations = !showRecommendations"
+            >
+                <span class="text-sm font-semibold">Recommendations</span>
+                <i-fa6-solid-chevron-down
+                    class="size-3.5 text-gray-400 transition-transform"
+                    :class="showRecommendations ? 'rotate-180' : ''"
+                />
+            </button>
+            <div v-if="showRecommendations" class="divide-y divide-gray-100 px-3 pb-3 dark:divide-dark-100">
+                <ContentItem
+                    v-for="related in relatedStreams"
+                    :key="related.url"
+                    :item="related"
+                    class="pt-3"
+                />
+            </div>
         </div>
 
         <!-- Comments -->
@@ -199,6 +213,7 @@ import { timeFormat, numberFormat } from "@/composables/useFormatting.js";
 import { fetchJson, apiUrl } from "@/composables/useApi.js";
 import { purifyHTML, rewriteDescription } from "@/utils/HtmlUtils";
 import CommentItem from "./CommentItem.vue";
+import ContentItem from "./ContentItem.vue";
 import {
     createRemoteClient,
     ensureRemoteMediaPlayback,
@@ -238,6 +253,10 @@ const commentsDisabled = ref(false);
 const loadingComments = ref(false);
 const showComments = ref(false);
 
+// Recommendations
+const relatedStreams = ref([]);
+const showRecommendations = ref(false);
+
 let lastFetchedVideoId = null;
 
 async function fetchVideoInfo(videoId) {
@@ -248,10 +267,14 @@ async function fetchVideoInfo(videoId) {
     commentsNextpage.value = null;
     commentsCount.value = 0;
     commentsDisabled.value = false;
+    relatedStreams.value = [];
     try {
         const data = await fetchJson(apiUrl() + "/streams/" + videoId);
         if (data?.description) {
             videoDescription.value = data.description;
+        }
+        if (data?.relatedStreams?.length) {
+            relatedStreams.value = data.relatedStreams;
         }
     } catch (_) { /* ignore */ }
 }
@@ -565,6 +588,26 @@ onUnmounted(() => {
         background: #3a3a3c;
     }
 
+    .scrubber::-webkit-slider-runnable-track {
+        height: 4px;
+        border-radius: 9999px;
+        background: #e5e5ea;
+    }
+
+    .dark .scrubber::-webkit-slider-runnable-track {
+        background: #3a3a3c;
+    }
+
+    .scrubber::-moz-range-track {
+        height: 4px;
+        border-radius: 9999px;
+        background: #e5e5ea;
+    }
+
+    .dark .scrubber::-moz-range-track {
+        background: #3a3a3c;
+    }
+
     .scrubber::-webkit-slider-thumb {
         -webkit-appearance: none;
         appearance: none;
@@ -573,6 +616,7 @@ onUnmounted(() => {
         border-radius: 50%;
         background: #155bd0;
         cursor: pointer;
+        margin-top: -6px;
     }
 
     .scrubber::-moz-range-thumb {
@@ -585,7 +629,24 @@ onUnmounted(() => {
     }
 
     .toggle {
-        @apply relative h-5 w-9 appearance-none rounded-full bg-gray-300 transition-colors checked:bg-[#155bd0] dark:bg-dark-100 dark:checked:bg-[#155bd0] cursor-pointer;
+        position: relative;
+        height: 20px;
+        width: 36px;
+        -webkit-appearance: none;
+        appearance: none;
+        border-radius: 9999px;
+        background-color: #d1d5db;
+        transition: background-color 0.2s;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+
+    .dark .toggle {
+        background-color: #3a3a3c;
+    }
+
+    .toggle:checked {
+        background-color: #155bd0;
     }
 
     .toggle::after {

@@ -1,14 +1,6 @@
 <template>
     <!-- Top nav bar -->
     <nav class="flex w-full items-center gap-2 px-3 pb-3 pt-2.5 sm:px-4">
-        <!-- Wordmark -->
-        <router-link
-            class="mr-1 flex shrink-0 items-center gap-1.5 font-semibold tracking-tight"
-            to="/"
-        >
-            <img alt="Piped" src="/img/icons/logo.svg" height="22" width="22" class="size-[22px] opacity-80" />
-            <span class="hidden text-[15px] sm:inline">Piped</span>
-        </router-link>
 
         <!-- Search bar (full-width on mobile, constrained on desktop) -->
         <div class="relative flex flex-1 items-center md:mx-auto md:max-w-sm">

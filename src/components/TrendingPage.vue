@@ -1,6 +1,4 @@
 <template>
-    <h1 v-t="'titles.trending'" class="mb-5 mt-2 text-xl font-semibold tracking-tight" />
-
     <LoadingIndicatorPage
         :show-content="videos.length != 0"
         class="mx-2 grid grid-cols-1 gap-y-5 max-md:gap-x-3 sm:mx-0 sm:grid-cols-2 md:grid-cols-3 md:gap-x-6 lg:grid-cols-4 xl:grid-cols-5"

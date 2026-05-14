@@ -1,23 +1,12 @@
 <template>
-    <h1 v-t="'titles.feed'" class="my-4 text-center font-bold" />
+    <div class="flex flex-wrap items-center gap-2 mb-3">
+        <button
+            class="inline-block cursor-pointer rounded-sm bg-gray-300 py-2 text-gray-600 hover:bg-gray-500 hover:text-white max-md:px-2 md:px-4 dark:bg-dark-400 dark:text-gray-400 dark:hover:bg-dark-300"
+            @click="toggleShortsFilter"
+            v-text="selectedFilter === 'shorts' ? $t('video.videos') : $t('video.shorts')"
+        />
 
-    <div class="flex flex-col flex-wrap gap-2 *:flex *:items-center *:gap-1 md:flex-row md:items-center">
-        <span>
-            <label for="filters">
-                <strong v-text="`${$t('actions.filter')}:`" />
-            </label>
-            <select
-                id="filters"
-                v-model="selectedFilter"
-                default="all"
-                class="h-8 grow rounded-md bg-gray-300 text-gray-600 dark:bg-dark-400 dark:text-gray-400"
-                @change="onFilterChange()"
-            >
-                <option v-for="filter in availableFilters" :key="filter" v-t="`video.${filter}`" :value="filter" />
-            </select>
-        </span>
-
-        <span>
+        <span v-if="channelGroups.length > 0" class="flex items-center gap-1">
             <label for="group-selector">
                 <strong v-text="`${$t('titles.channel_groups')}:`" />
             </label>
@@ -35,10 +24,6 @@
                     v-text="group.groupName"
                 />
             </select>
-        </span>
-
-        <span class="md:ml-auto">
-            <SortingSelector by-key="uploaded" @apply="order => videos.sort(order)" />
         </span>
     </div>
     <hr />
@@ -73,10 +58,9 @@
 import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import VideoItem from "./VideoItem.vue";
-import SortingSelector from "./SortingSelector.vue";
 import LoadingIndicatorPage from "./LoadingIndicatorPage.vue";
 import { authApiUrl, getAuthToken, isAuthenticated } from "@/composables/useApi.js";
-import { getPreferenceBoolean, getPreferenceString, setPreference } from "@/composables/usePreferences.js";
+import { getPreferenceBoolean } from "@/composables/usePreferences.js";
 import { fetchFeed, getUnauthenticatedChannels, fetchDeArrowContent } from "@/composables/useSubscriptions.js";
 import { getChannelGroups } from "@/composables/useChannelGroups.js";
 import { updateWatched } from "@/composables/useMisc.js";
@@ -87,8 +71,7 @@ let currentVideoCount = 0;
 const videoStep = 100;
 const videosStore = ref(null);
 const videos = ref([]);
-const availableFilters = ["all", "shorts", "videos"];
-const selectedFilter = ref("all");
+const selectedFilter = ref("videos");
 const selectedGroupName = ref("");
 const channelGroups = ref([]);
 
@@ -145,8 +128,8 @@ function shouldShowVideo(video) {
     }
 }
 
-function onFilterChange() {
-    setPreference("feedFilter", selectedFilter.value);
+function toggleShortsFilter() {
+    selectedFilter.value = selectedFilter.value === "shorts" ? "videos" : "shorts";
 }
 
 onMounted(() => {
@@ -157,11 +140,10 @@ onMounted(() => {
         }
 
         videosStore.value = resp;
+        videosStore.value.sort((a, b) => b.uploaded - a.uploaded);
         loadMoreVideos();
         updateWatched(videos.value);
     });
-
-    selectedFilter.value = getPreferenceString("feedFilter") ?? "all";
 
     if (!window.db) return;
 

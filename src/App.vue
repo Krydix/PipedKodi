@@ -33,7 +33,7 @@ const route = useRoute();
 const timeAgoLocales = import.meta.glob("../node_modules/javascript-time-ago/locale/*.json");
 const appLocales = import.meta.glob("./locales/*.json");
 
-const themePreference = usePreferenceString("theme", "dark");
+const themePreference = usePreferenceString("theme", "auto");
 const localePreference = usePreferenceString("hl", "en");
 const theme = ref("dark");
 const hideChrome = computed(() => route.path === "/remote/player" || route.query.remoteRole === "player");
