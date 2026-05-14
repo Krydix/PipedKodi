@@ -302,6 +302,9 @@ const isScrubbing = ref(false);
 let remoteClient = null;
 let cleanupMediaActions = null;
 let scrubberTimer = null;
+let lockScreenActivationRequested = false;
+let lockScreenActivationInFlight = null;
+let cleanupLockScreenActivation = null;
 
 const scrubberMax = computed(() => {
     const duration = Number(playerState.value.duration || currentMedia.value?.duration || 0);
@@ -312,12 +315,73 @@ function sendControl(action, payload = {}) {
     remoteClient?.send("control", { action, ...payload });
 }
 
-function syncMediaSessionPosition() {
-    updateRemoteMediaSession({
+function getRemoteMediaState() {
+    return {
         ...currentMedia.value,
         ...playerState.value,
         currentTime: getLivePlayerPosition(),
-    });
+    };
+}
+
+function syncMediaSessionPosition() {
+    updateRemoteMediaSession(getRemoteMediaState());
+}
+
+async function maybeStartLockScreenControls() {
+    if (!lockScreenActivationRequested || lockScreenActivationInFlight) return false;
+
+    const mediaState = getRemoteMediaState();
+    const duration = Number(mediaState.duration ?? 0);
+    const hasActivePlayback =
+        Boolean(mediaState.title || mediaState.videoId || mediaState.query?.v) && duration > 0 && !mediaState.paused;
+
+    if (!hasActivePlayback) {
+        syncMediaSessionPosition();
+        return false;
+    }
+
+    lockScreenActivationInFlight = (async () => {
+        const didStart = await ensureRemoteMediaPlayback(mediaState);
+        syncMediaSessionPosition();
+
+        if (didStart) {
+            lockScreenActivationRequested = false;
+            cleanupLockScreenActivation?.();
+            cleanupLockScreenActivation = null;
+        }
+
+        return didStart;
+    })();
+
+    try {
+        return await lockScreenActivationInFlight;
+    } finally {
+        lockScreenActivationInFlight = null;
+    }
+}
+
+function requestLockScreenControls() {
+    lockScreenActivationRequested = true;
+    void maybeStartLockScreenControls();
+}
+
+function installLockScreenActivationListeners() {
+    if (cleanupLockScreenActivation) return;
+
+    const activate = () => {
+        requestLockScreenControls();
+    };
+
+    const listenerOptions = { passive: true };
+    window.addEventListener("touchstart", activate, listenerOptions);
+    window.addEventListener("pointerdown", activate, listenerOptions);
+    window.addEventListener("keydown", activate);
+
+    cleanupLockScreenActivation = () => {
+        window.removeEventListener("touchstart", activate, listenerOptions);
+        window.removeEventListener("pointerdown", activate, listenerOptions);
+        window.removeEventListener("keydown", activate);
+    };
 }
 
 function applyRemotePayload(payload) {
@@ -330,6 +394,7 @@ function applyRemotePayload(payload) {
     };
 
     syncMediaSessionPosition();
+    void maybeStartLockScreenControls();
 }
 
 function applyPlayerState(payload) {
@@ -346,6 +411,7 @@ function applyPlayerState(payload) {
     }
 
     syncMediaSessionPosition();
+    void maybeStartLockScreenControls();
 }
 
 function getLivePlayerPosition() {
@@ -377,12 +443,8 @@ function syncScrubberPosition() {
 }
 
 async function startLockScreenControls() {
-    await ensureRemoteMediaPlayback({
-        ...currentMedia.value,
-        ...playerState.value,
-        currentTime: getLivePlayerPosition(),
-    });
-    syncMediaSessionPosition();
+    requestLockScreenControls();
+    await maybeStartLockScreenControls();
 }
 
 function togglePlayback() {
@@ -451,8 +513,9 @@ onMounted(async () => {
         onSeekTo: details => sendControl("seek", { currentTime: details?.seekTime ?? 0 }),
     });
 
+    installLockScreenActivationListeners();
     connectRemoteController();
-    await startLockScreenControls();
+    syncMediaSessionPosition();
 
     scrubberTimer = window.setInterval(syncScrubberPosition, 250);
 });
@@ -462,6 +525,7 @@ onUnmounted(() => {
         window.clearInterval(scrubberTimer);
         scrubberTimer = null;
     }
+    cleanupLockScreenActivation?.();
     cleanupMediaActions?.();
     remoteClient?.close();
 });
