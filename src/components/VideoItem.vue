@@ -17,7 +17,7 @@
         </a>
 
         <div class="flex items-start pt-1">
-            <router-link :to="item.uploaderUrl">
+            <router-link :to="item.uploaderUrl" @click.stop>
                 <img
                     v-if="item.uploaderAvatar"
                     loading="lazy"
@@ -34,6 +34,7 @@
                     class="inline-flex max-w-full items-center gap-1 text-sm/tight underline decoration-dark-400 hover:text-dark-400 focus:text-dark-400 dark:text-gray-300 dark:decoration-dark-100 dark:hover:text-gray-400 dark:hover:underline dark:hover:decoration-gray-400"
                     :to="item.uploaderUrl"
                     :title="item.uploaderName"
+                    @click.stop
                 >
                     <span class="truncate" v-text="item.uploaderName" />
                     <i-fa6-solid-check v-if="item.uploaderVerified" class="shrink-0" />

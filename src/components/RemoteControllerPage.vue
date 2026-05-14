@@ -117,7 +117,7 @@ const route = useRoute();
 const router = useRouter();
 
 const remoteSessionId = useRemoteSessionId(null);
-const remoteBrowseEnabled = useRemoteBrowseEnabled(false);
+const remoteBrowseEnabled = useRemoteBrowseEnabled(true);
 const sessionId = ref(null);
 const connectionStatus = ref("connecting");
 const relayUrl = ref("");

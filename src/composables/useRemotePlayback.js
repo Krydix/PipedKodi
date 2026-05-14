@@ -91,7 +91,7 @@ export function useRemoteSessionId(defaultValue = null) {
     return usePreferenceString(REMOTE_SESSION_STORAGE_KEY, defaultValue);
 }
 
-export function useRemoteBrowseEnabled(defaultValue = false) {
+export function useRemoteBrowseEnabled(defaultValue = true) {
     return usePreferenceBoolean(REMOTE_BROWSE_STORAGE_KEY, defaultValue);
 }
 
@@ -114,7 +114,7 @@ export function setRemoteRelayUrl(url) {
 }
 
 export function shouldUseRemoteBrowse() {
-    return getPreferenceBoolean(REMOTE_BROWSE_STORAGE_KEY, false);
+    return getPreferenceBoolean(REMOTE_BROWSE_STORAGE_KEY, true);
 }
 
 export function buildRemoteControllerUrl(sessionId) {
