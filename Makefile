@@ -3,10 +3,13 @@ HOST := 0.0.0.0
 PREVIEW_PORT := 4173
 RELAY_PORT := 8090
 
-.PHONY: build relay preview run kill-ports
+.PHONY: build build-full relay preview run kill-ports
 
 build:
 	$(PNPM) build
+
+build-full:
+	$(PNPM) build:full
 
 relay:
 	$(PNPM) remote-relay

@@ -28,11 +28,17 @@ import { getChannelGroups, createOrUpdateChannelGroup } from "@/composables/useC
 
 const darkModePreference = window.matchMedia("(prefers-color-scheme: dark)");
 const route = useRoute();
+const timeAgoLocales = import.meta.glob("../node_modules/javascript-time-ago/locale/*.json");
+const appLocales = import.meta.glob("./locales/*.json");
 
 const themePreference = usePreferenceString("theme", "dark");
 const localePreference = usePreferenceString("hl", "en");
 const theme = ref("dark");
 const hideChrome = computed(() => route.path === "/remote/player" || route.query.remoteRole === "player");
+
+function getLocaleModuleLoader(loaders, locale) {
+    return loaders[`../node_modules/javascript-time-ago/locale/${locale}.json`] ?? loaders[`./locales/${locale}.json`];
+}
 
 function setTheme() {
     const themes = {
@@ -59,9 +65,7 @@ async function applyLocale(locale = localePreference.value) {
     const resolvedLocale = locale || (await getDefaultLanguage());
 
     if (resolvedLocale !== TimeAgoConfig.locale) {
-        const localeTime = await import(`../node_modules/javascript-time-ago/locale/${resolvedLocale}.json`)
-            .catch(() => null)
-            .then(module => module?.default);
+        const localeTime = await getLocaleModuleLoader(timeAgoLocales, resolvedLocale)?.().then(module => module?.default);
         if (localeTime) {
             TimeAgo.addLocale(localeTime);
             TimeAgoConfig.locale = resolvedLocale;
@@ -70,8 +74,10 @@ async function applyLocale(locale = localePreference.value) {
 
     if (window.i18n.global.locale.value !== resolvedLocale) {
         if (!window.i18n.global.availableLocales.includes(resolvedLocale)) {
-            const messages = await import(`./locales/${resolvedLocale}.json`).then(module => module.default);
-            window.i18n.global.setLocaleMessage(resolvedLocale, messages);
+            const messages = await getLocaleModuleLoader(appLocales, resolvedLocale)?.().then(module => module.default);
+            if (messages) {
+                window.i18n.global.setLocaleMessage(resolvedLocale, messages);
+            }
         }
         window.i18n.global.locale.value = resolvedLocale;
     }

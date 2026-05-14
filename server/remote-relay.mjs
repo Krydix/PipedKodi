@@ -42,6 +42,23 @@ function getYtProxyBaseUrl(request) {
     return `${getRequestOrigin(request)}/api/yt/proxy`;
 }
 
+function buildYtProxyMediaUrl(rawUrl, request) {
+    try {
+        const parsedUrl = new URL(rawUrl);
+        const proxiedUrl = new URL(getYtProxyBaseUrl(request));
+
+        proxiedUrl.pathname = `${proxiedUrl.pathname.replace(/\/$/, "")}${parsedUrl.pathname}`;
+        parsedUrl.searchParams.forEach((value, key) => {
+            proxiedUrl.searchParams.append(key, value);
+        });
+        proxiedUrl.searchParams.set("host", parsedUrl.host);
+
+        return proxiedUrl.toString();
+    } catch {
+        return rawUrl;
+    }
+}
+
 function getMimeTypeForExtension(extension, hasVideo = true) {
     switch (extension) {
         case "mp4":
@@ -106,7 +123,7 @@ function mapChapters(info) {
         }));
 }
 
-function mapMuxedFormats(info) {
+function mapMuxedFormats(info, request) {
     const formats = Array.isArray(info.formats) ? info.formats : [];
 
     const mappedFormats = formats
@@ -135,7 +152,7 @@ function mapMuxedFormats(info) {
             itag: String(format.format_id ?? "muxed"),
             mimeType: getMimeTypeForExtension(format.ext, true),
             quality: format.format_note ?? format.resolution ?? null,
-            url: format.url,
+            url: buildYtProxyMediaUrl(format.url, request),
             videoOnly: false,
             width: Number(format.width ?? 0),
         }))
@@ -174,7 +191,7 @@ function mapMuxedFormats(info) {
             itag: String(info.format_id ?? "direct"),
             mimeType: getMimeTypeForExtension(info.ext, true),
             quality: info.format_note ?? info.resolution ?? null,
-            url: info.url,
+            url: buildYtProxyMediaUrl(info.url, request),
             videoOnly: false,
             width: Number(info.width ?? 0),
         },
@@ -212,7 +229,7 @@ function mapYtDlpInfoToPipedShape(info, request) {
         uploaderSubscriberCount: Number(info.channel_follower_count ?? 0),
         uploaderUrl: info.channel_url ?? info.uploader_url ?? null,
         uploaderVerified: false,
-        videoStreams: mapMuxedFormats(info),
+        videoStreams: mapMuxedFormats(info, request),
         views: Number(info.view_count ?? 0),
         visibility: info.availability ?? "public",
     };
