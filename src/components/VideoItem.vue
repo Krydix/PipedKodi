@@ -1,7 +1,7 @@
 <template>
-    <div v-if="showVideo" class="flex flex-col justify-between">
+    <div v-if="showVideo" class="group flex flex-col justify-between">
         <a
-            class="inline-block w-full hover:text-red-500 focus:text-red-500 dark:hover:text-red-400 dark:focus:text-red-400"
+            class="inline-block w-full"
             :href="watchHref"
             @click="handleWatchSelection($event, watchTarget)"
         >
@@ -9,7 +9,7 @@
 
             <div>
                 <p
-                    class="line-clamp-2 pt-2 leading-tight font-bold hover:text-red-500 focus:text-red-500 dark:hover:text-red-400 dark:focus:text-red-400"
+                    class="line-clamp-2 pt-2 text-sm leading-snug font-semibold text-gray-900 group-hover:text-[#155bd0] dark:text-gray-100 dark:group-hover:text-[#5b9cf6]"
                     :title="title"
                     v-text="title"
                 />
@@ -31,7 +31,7 @@
             <div class="min-w-0 flex-1 px-2">
                 <router-link
                     v-if="item.uploaderUrl && item.uploaderName && !hideChannel"
-                    class="inline-flex max-w-full items-center gap-1 text-sm/tight underline decoration-dark-400 hover:text-dark-400 focus:text-dark-400 dark:text-gray-300 dark:decoration-dark-100 dark:hover:text-gray-400 dark:hover:underline dark:hover:decoration-gray-400"
+                    class="inline-flex max-w-full items-center gap-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                     :to="item.uploaderUrl"
                     :title="item.uploaderName"
                     @click.stop
@@ -57,26 +57,28 @@
                 </div>
             </div>
 
-            <div class="ml-1 flex shrink-0 items-center gap-2.5 pt-0.5">
+            <div class="ml-1 flex shrink-0 items-center gap-1.5 pt-0.5 text-gray-400 dark:text-gray-600">
                 <a
                     :href="listenHref"
                     :aria-label="preferListen ? title : 'Listen to ' + title"
                     :title="preferListen ? title : 'Listen to ' + title"
+                    class="rounded p-1 hover:text-gray-700 dark:hover:text-gray-300"
                     @click="handleWatchSelection($event, listenTarget)"
                 >
                     <i-fa6-solid-tv v-if="preferListen" />
                     <i-fa6-solid-headphones v-else />
                 </a>
-                <button :title="$t('actions.add_to_playlist')" @click="showPlaylistModal = !showPlaylistModal">
+                <button :title="$t('actions.add_to_playlist')" class="rounded p-1 hover:text-gray-700 dark:hover:text-gray-300" @click="showPlaylistModal = !showPlaylistModal">
                     <i-fa6-solid-circle-plus />
                 </button>
-                <button :title="$t('actions.share')" @click="showShareModal = !showShareModal">
+                <button :title="$t('actions.share')" class="rounded p-1 hover:text-gray-700 dark:hover:text-gray-300" @click="showShareModal = !showShareModal">
                     <i-fa6-solid-share />
                 </button>
                 <button
                     v-if="admin"
                     ref="removeButton"
                     :title="$t('actions.remove_from_playlist')"
+                    class="rounded p-1 hover:text-gray-700 dark:hover:text-gray-300"
                     @click="showConfirmRemove = true"
                 >
                     <i-fa6-solid-circle-minus />
@@ -84,6 +86,7 @@
                 <button
                     v-if="showMarkOnWatched && isFeed"
                     ref="watchButton"
+                    class="rounded p-1 hover:text-gray-700 dark:hover:text-gray-300"
                     @click="toggleWatched(item.url.substr(-11))"
                 >
                     <i-fa6-solid-eye-slash

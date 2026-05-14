@@ -41,14 +41,9 @@ export default defineConfig({
         VitePWA({
             registerType: "autoUpdate",
             workbox: {
-                globPatterns: [
-                    "**/*.{css,html}",
-                    "**/[A-Z]*.js",
-                    "**/index*.js",
-                    "**/shaka-player*.js",
-                    "manifest.webmanifest",
-                ],
-                globIgnores: ["**/*-legacy-*.js"],
+                globPatterns: ["**/*.{css,html}", "manifest.webmanifest"],
+                // Locale and component JS chunks are fetched on demand; only precache the shell
+                globIgnores: ["**/*.js", "**/*-legacy-*.js"],
                 runtimeCaching: [
                     {
                         urlPattern: /https:\/\/[a-zA-Z./0-9_]*\.(?:otf|ttf)/i,
@@ -97,6 +92,7 @@ export default defineConfig({
         },
     },
     build: {
+        emptyOutDir: false,
         sourcemap: enableSourceMaps,
         cssMinify: "lightningcss",
     },

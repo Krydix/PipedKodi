@@ -1,7 +1,7 @@
 <template>
     <div
-        class="flex min-h-screen w-full flex-col bg-white text-black antialiased dark:bg-dark-900 dark:text-white"
-        :class="[theme, hideChrome ? 'p-0' : 'px-[1vw] py-5']"
+        class="flex min-h-screen w-full flex-col bg-light-200 text-black antialiased dark:bg-dark-900 dark:text-white"
+        :class="[theme, hideChrome ? 'p-0' : 'px-[1vw] pt-5 pb-20']"
     >
         <div class="flex-1">
             <NavBar v-if="!hideChrome" />
@@ -13,6 +13,7 @@
         </div>
 
         <FooterComponent v-if="!hideChrome" />
+        <BottomNav />
     </div>
 </template>
 
@@ -21,6 +22,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavBar from "./components/NavBar.vue";
 import FooterComponent from "./components/FooterComponent.vue";
+import BottomNav from "./components/BottomNav.vue";
 import { testLocalStorage, usePreferenceString } from "@/composables/usePreferences.js";
 import { getDefaultLanguage, TimeAgo, TimeAgoConfig } from "@/composables/useFormatting.js";
 import { fetchSubscriptions } from "@/composables/useSubscriptions.js";

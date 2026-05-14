@@ -1,24 +1,24 @@
 <template>
-    <nav class="relative flex w-full flex-wrap items-center justify-center px-2 pb-2.5 sm:px-4">
-        <div class="flex flex-1 justify-start">
-            <router-link class="flex items-center font-sans text-3xl font-bold" to="/"
-                ><img
-                    alt="logo"
-                    src="/img/icons/logo.svg"
-                    height="32"
-                    width="32"
-                    class="mr-[-0.6rem] w-10"
-                />iped</router-link
-            >
-        </div>
-        <div class="relative inline-flex items-center max-md:hidden">
+    <!-- Top nav bar -->
+    <nav class="flex w-full items-center gap-2 px-3 pb-3 pt-2.5 sm:px-4">
+        <!-- Wordmark -->
+        <router-link
+            class="mr-1 flex shrink-0 items-center gap-1.5 font-semibold tracking-tight"
+            to="/"
+        >
+            <img alt="Piped" src="/img/icons/logo.svg" height="22" width="22" class="size-[22px] opacity-80" />
+            <span class="hidden text-[15px] sm:inline">Piped</span>
+        </router-link>
+
+        <!-- Search bar (full-width on mobile, constrained on desktop) -->
+        <div class="relative flex flex-1 items-center md:mx-auto md:max-w-sm">
+            <i-fa6-solid-magnifying-glass class="pointer-events-none absolute left-3 size-3.5 text-gray-400 dark:text-gray-500" />
             <input
                 ref="videoSearch"
                 v-model="searchText"
-                class="h-10 w-72 rounded-md bg-gray-300 px-2.5 pr-20 text-gray-600 focus:shadow-red-400 focus:outline-2 focus:outline-red-500 dark:bg-dark-400 dark:text-gray-400"
+                class="h-9 w-full rounded-xl bg-light-200 pl-9 pr-8 text-sm text-gray-800 outline-none ring-1 ring-transparent transition-shadow focus:ring-2 focus:ring-[#155bd0]/40 dark:bg-dark-400 dark:text-gray-200 dark:placeholder:text-gray-500 dark:focus:ring-[#155bd0]/50"
                 type="text"
                 role="search"
-                :title="$t('actions.search')"
                 :placeholder="$t('actions.search')"
                 @keyup="onKeyUp"
                 @keypress="onKeyPress"
@@ -27,132 +27,42 @@
             />
             <ClearButton v-if="searchText" @clear="searchText = ''" />
         </div>
-        <button
-            id="search-btn"
-            class="mx-1 hidden h-10 w-auto cursor-pointer rounded-sm bg-gray-300 px-2.5 py-2 text-gray-600 hover:bg-gray-500 hover:text-white focus:shadow-red-400 focus:outline-2 focus:outline-red-500 max-[848px]:hidden max-md:px-2 min-[848px]:inline-block md:px-4 dark:bg-dark-400 dark:text-gray-400 dark:hover:bg-dark-300"
-            @click="onSearchClick"
-        >
-            <i-fa6-solid-magnifying-glass />
-        </button>
-        <!-- three vertical lines for toggling the hamburger menu on mobile -->
-        <button class="mr-3 flex flex-col justify-end md:hidden" @click="showTopNav = !showTopNav">
-            <span class="my-[0.1125rem] rounded-xl bg-dark-900 px-2.5 py-px dark:bg-white"></span>
-            <span class="my-[0.1125rem] rounded-xl bg-dark-900 px-2.5 py-px dark:bg-white"></span>
-            <span class="my-[0.1125rem] rounded-xl bg-dark-900 px-2.5 py-px dark:bg-white"></span>
-        </button>
-        <!-- navigation bar for large screen devices -->
-        <ul class="hidden list-none *:pl-3 md:flex md:flex-1 md:justify-end">
+
+        <!-- Nav icons (desktop only — bottom nav handles mobile) -->
+        <ul class="ml-auto hidden list-none items-center gap-0.5 md:flex">
             <li v-if="shouldShowTrending">
-                <router-link
-                    v-t="'titles.trending'"
-                    to="/trending"
-                    class="hover:text-red-500 dark:hover:text-red-400"
-                />
-            </li>
-            <li>
-                <router-link
-                    v-t="'titles.preferences'"
-                    to="/preferences"
-                    class="hover:text-red-500 dark:hover:text-red-400"
-                />
-            </li>
-            <li v-if="shouldShowLogin">
-                <router-link v-t="'titles.login'" to="/login" class="hover:text-red-500 dark:hover:text-red-400" />
-            </li>
-            <li v-if="shouldShowRegister">
-                <router-link
-                    v-t="'titles.register'"
-                    to="/register"
-                    class="hover:text-red-500 dark:hover:text-red-400"
-                />
-            </li>
-            <li v-if="shouldShowHistory">
-                <router-link v-t="'titles.history'" to="/history" class="hover:text-red-500 dark:hover:text-red-400" />
-            </li>
-            <li>
-                <router-link
-                    v-t="'titles.playlists'"
-                    to="/playlists"
-                    class="hover:text-red-500 dark:hover:text-red-400"
-                />
+                <router-link to="/trending" :title="$t('titles.trending')" aria-label="Trending" class="nav-icon-btn"><i-fa6-solid-fire /></router-link>
             </li>
             <li v-if="!shouldShowTrending">
-                <router-link v-t="'titles.feed'" to="/feed" class="hover:text-red-500 dark:hover:text-red-400" />
+                <router-link to="/feed" :title="$t('titles.feed')" aria-label="Feed" class="nav-icon-btn"><i-fa6-solid-play /></router-link>
             </li>
             <li>
-                <router-link
-                    to="/remote/controller"
-                    class="hover:text-red-500 dark:hover:text-red-400"
-                    title="Remote controller"
-                >
-                    <i-fa6-solid-mobile-screen class="inline" />
-                </router-link>
+                <router-link to="/playlists" :title="$t('titles.playlists')" aria-label="Playlists" class="nav-icon-btn"><i-fa6-solid-list /></router-link>
+            </li>
+            <li v-if="shouldShowHistory">
+                <router-link to="/history" :title="$t('titles.history')" aria-label="History" class="nav-icon-btn"><i-fa6-solid-clock-rotate-left /></router-link>
+            </li>
+            <li v-if="shouldShowLogin">
+                <router-link to="/login" :title="$t('titles.login')" aria-label="Login" class="nav-icon-btn"><i-fa6-solid-user /></router-link>
             </li>
             <li>
-                <router-link to="/remote/player" class="hover:text-red-500 dark:hover:text-red-400" title="TV player">
-                    <i-fa6-solid-tv class="inline" />
-                </router-link>
+                <router-link to="/remote/controller" title="Remote controller" aria-label="Remote controller" class="nav-icon-btn"><i-fa6-solid-mobile-screen /></router-link>
+            </li>
+            <li>
+                <router-link to="/remote/player" title="TV player" aria-label="TV player" class="nav-icon-btn"><i-fa6-solid-tv /></router-link>
+            </li>
+            <li>
+                <router-link to="/preferences" :title="$t('titles.preferences')" aria-label="Preferences" class="nav-icon-btn"><i-fa6-solid-gear /></router-link>
             </li>
         </ul>
+
+        <!-- Mobile-only icon row (login + preferences) -->
+        <div class="flex items-center gap-0.5 md:hidden">
+            <router-link v-if="shouldShowLogin" to="/login" :title="$t('titles.login')" aria-label="Login" class="nav-icon-btn"><i-fa6-solid-user /></router-link>
+            <router-link to="/preferences" aria-label="Preferences" class="nav-icon-btn"><i-fa6-solid-gear /></router-link>
+        </div>
     </nav>
-    <!-- navigation bar for mobile devices -->
-    <div
-        v-if="showTopNav"
-        class="mb-4 flex flex-col *:flex *:w-full *:items-center *:gap-1 *:border-b *:border-dark-100 *:p-1"
-    >
-        <router-link v-if="shouldShowTrending" to="/trending">
-            <i-fa6-solid-fire />
-            <i18n-t keypath="titles.trending"></i18n-t>
-        </router-link>
-        <router-link to="/preferences">
-            <i-fa6-solid-gear />
-            <i18n-t keypath="titles.preferences"></i18n-t>
-        </router-link>
-        <router-link v-if="shouldShowLogin" to="/login">
-            <i-fa6-solid-user />
-            <i18n-t keypath="titles.login"></i18n-t>
-        </router-link>
-        <router-link v-if="shouldShowLogin" to="/register">
-            <i-fa6-solid-user-plus />
-            <i18n-t keypath="titles.register"></i18n-t>
-        </router-link>
-        <router-link v-if="shouldShowHistory" to="/history">
-            <i-fa6-solid-clock-rotate-left />
-            <i18n-t keypath="titles.history"></i18n-t>
-        </router-link>
-        <router-link to="/playlists">
-            <i-fa6-solid-list />
-            <i18n-t keypath="titles.playlists"></i18n-t>
-        </router-link>
-        <router-link v-if="!shouldShowTrending" to="/feed">
-            <i-fa6-solid-play />
-            <i18n-t keypath="titles.feed"></i18n-t>
-        </router-link>
-        <router-link to="/remote/controller">
-            <i-fa6-solid-mobile-screen />
-            <span>Remote controller</span>
-        </router-link>
-        <router-link to="/remote/player">
-            <i-fa6-solid-tv />
-            <span>TV player</span>
-        </router-link>
-    </div>
-    <!-- search suggestions for mobile devices -->
-    <div class="relative mb-2 inline-flex w-full items-center md:hidden">
-        <input
-            v-model="searchText"
-            class="h-10 w-full rounded-md bg-gray-300 px-2.5 text-gray-600 focus:shadow-red-400 focus:outline-2 focus:outline-red-500 dark:bg-dark-400 dark:text-gray-400"
-            type="text"
-            role="search"
-            :title="$t('actions.search')"
-            :placeholder="$t('actions.search')"
-            @keyup="onKeyUp"
-            @keypress="onKeyPress"
-            @focus="onInputFocus"
-            @blur="onInputBlur"
-        />
-        <ClearButton v-if="searchText" @clear="searchText = ''" />
-    </div>
+
     <SearchSuggestions
         v-show="(searchText || showSearchHistory) && suggestionsVisible"
         ref="searchSuggestions"
@@ -281,4 +191,15 @@ onMounted(() => {
 });
 </script>
 
-<style></style>
+<style>
+@reference "../app.css";
+
+@layer components {
+    .nav-icon-btn {
+        @apply flex items-center justify-center rounded-lg p-2 text-gray-500 transition-colors hover:bg-light-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-dark-300 dark:hover:text-gray-100;
+    }
+    .mobile-nav-item {
+        @apply flex items-center gap-2.5 px-4 py-3 text-gray-700 transition-colors hover:bg-light-300 dark:text-gray-300 dark:hover:bg-dark-100;
+    }
+}
+</style>

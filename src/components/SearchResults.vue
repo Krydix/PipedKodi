@@ -1,20 +1,18 @@
 <template>
-    <h1 class="my-2 text-center" v-text="$route.query.search_query" />
+    <h1 class="mb-4 mt-2 text-xl font-semibold tracking-tight" v-text="$route.query.search_query" />
 
-    <label for="ddlSearchFilters">
-        <strong v-text="`${$t('actions.filter')}:`" />
-    </label>
-    <select
-        id="ddlSearchFilters"
-        v-model="selectedFilter"
-        default="all"
-        class="h-8 w-auto rounded-md bg-gray-300 px-2.5 text-gray-600 dark:bg-dark-400 dark:text-gray-400"
-        @change="updateFilter()"
-    >
-        <option v-for="filter in availableFilters" :key="filter" v-t="`search.${filter}`" :value="filter" />
-    </select>
-
-    <hr />
+    <div class="mb-4 flex items-center gap-2">
+        <label for="ddlSearchFilters" class="text-sm text-gray-500">{{ $t('actions.filter') }}</label>
+        <select
+            id="ddlSearchFilters"
+            v-model="selectedFilter"
+            default="all"
+            class="h-8 rounded-lg bg-white px-3 text-sm text-gray-700 ring-1 ring-light-300 focus:outline-none focus:ring-[#155bd0]/40 dark:bg-dark-400 dark:text-gray-300 dark:ring-dark-100"
+            @change="updateFilter()"
+        >
+            <option v-for="filter in availableFilters" :key="filter" v-t="`search.${filter}`" :value="filter" />
+        </select>
+    </div>
 
     <div v-if="results && results.corrected">
         <i18n-t keypath="search.did_you_mean" tag="div" class="text-lg">
