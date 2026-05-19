@@ -74,7 +74,7 @@ jobs:
               run: |
                   mkdir -p release-assets
                   cp compose.ghcr.yml release-assets/compose.yml
-                  cp .env.release.example release-assets/.env.example
+                                    cp .env.release.example release-assets/env.example
                   printf '%s\n' "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.release.tag_name }}" > release-assets/image-tag.txt
                   printf '%s\n' "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" > release-assets/image-digest.txt
             - name: Upload release assets
@@ -84,7 +84,7 @@ jobs:
               run: |
                   gh release upload "${{ github.event.release.tag_name }}" \
                     release-assets/compose.yml \
-                    release-assets/.env.example \
+                                        release-assets/env.example \
                     release-assets/image-tag.txt \
                     release-assets/image-digest.txt \
                     --clobber

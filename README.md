@@ -72,14 +72,14 @@ This fork publishes container images to GHCR and attaches a deployment bundle to
 Release assets include:
 
 -   `compose.yml` to run the released image with Docker Compose.
--   `.env.example` with the required runtime variables.
+-   `env.example` with the required runtime variables.
 -   `image-tag.txt` and `image-digest.txt` with the exact published image reference.
 
 To deploy a release:
 
 ```sh
 curl -fsSL -o compose.yml https://github.com/Krydix/PipedKodi/releases/download/v0.1.0/compose.yml
-curl -fsSL -o .env https://github.com/Krydix/PipedKodi/releases/download/v0.1.0/.env.example
+curl -fsSL -o .env https://github.com/Krydix/PipedKodi/releases/download/v0.1.0/env.example
 docker compose --env-file .env -f compose.yml up -d
 ```
 
