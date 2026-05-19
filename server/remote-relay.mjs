@@ -36,6 +36,70 @@ function createProxyUrl(pathname, searchParams) {
     return targetUrl;
 }
 
+function getRequestOrigin(request) {
+    const forwardedProto = request.headers["x-forwarded-proto"];
+    const protocol = Array.isArray(forwardedProto)
+        ? forwardedProto[0]
+        : forwardedProto?.split(",").at(0)?.trim() || "http";
+    const hostHeader = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
+
+    return `${protocol}://${hostHeader ?? `localhost:${port}`}`;
+}
+
+function isRelayProxyImageHost(hostname) {
+    const normalizedHost = hostname?.toLowerCase();
+
+    if (!normalizedHost) return false;
+
+    return normalizedHost.endsWith(".ytimg.com") || normalizedHost.endsWith(".ggpht.com") || normalizedHost.endsWith(".googleusercontent.com");
+}
+
+function rewritePipedImageUrl(rawValue, request) {
+    if (typeof rawValue !== "string" || !/^https?:\/\//i.test(rawValue)) return rawValue;
+
+    let parsedUrl;
+    try {
+        parsedUrl = new URL(rawValue);
+    } catch {
+        return rawValue;
+    }
+
+    const relayOrigin = getRequestOrigin(request);
+    if (parsedUrl.origin === relayOrigin && parsedUrl.pathname.startsWith("/api/yt/proxy")) {
+        return rawValue;
+    }
+
+    const targetHost = parsedUrl.searchParams.get("host") ?? parsedUrl.hostname;
+    if (!isRelayProxyImageHost(targetHost)) return rawValue;
+
+    const relayProxyUrl = new URL("/api/yt/proxy", relayOrigin);
+    relayProxyUrl.pathname = `${relayProxyUrl.pathname.replace(/\/$/, "")}${parsedUrl.pathname}`;
+
+    if (!parsedUrl.searchParams.has("host")) {
+        relayProxyUrl.searchParams.set("host", targetHost);
+    }
+
+    parsedUrl.searchParams.forEach((value, key) => {
+        relayProxyUrl.searchParams.append(key, value);
+    });
+
+    return relayProxyUrl.toString();
+}
+
+function rewritePipedImageUrls(payload, request) {
+    if (Array.isArray(payload)) {
+        return payload.map(value => rewritePipedImageUrls(value, request));
+    }
+
+    if (payload && typeof payload === "object") {
+        return Object.fromEntries(
+            Object.entries(payload).map(([key, value]) => [key, rewritePipedImageUrls(value, request)]),
+        );
+    }
+
+    return rewritePipedImageUrl(payload, request);
+}
+
 function sanitizeVideoId(rawValue) {
     return /^[a-zA-Z0-9_-]{11}$/.test(rawValue ?? "") ? rawValue : null;
 }
@@ -155,11 +219,6 @@ function serveSilentAudio(request, response, url) {
     streamSilentWavResponse(response, { start, end, header });
 }
 
-function getRequestOrigin(request) {
-    const forwardedProto = request.headers["x-forwarded-proto"];
-    const protocol = typeof forwardedProto === "string" ? forwardedProto.split(",")[0] : "http";
-    return `${protocol}://${request.headers.host ?? `localhost:${port}`}`;
-}
 
 function getYtProxyBaseUrl(request) {
     return `${getRequestOrigin(request)}/api/yt/proxy`;
@@ -509,14 +568,20 @@ async function proxyPipedApiRequest(request, response, url) {
         const proxyResponse = await fetch(targetUrl, requestInit);
         applyCorsHeaders(response);
 
+        const contentType = proxyResponse.headers.get("content-type") ?? "";
+
         response.statusCode = proxyResponse.status;
         proxyResponse.headers.forEach((value, key) => {
-            if (["content-encoding", "transfer-encoding", "access-control-allow-origin"].includes(key)) return;
+            if (["content-encoding", "transfer-encoding", "access-control-allow-origin", "content-length", "etag"].includes(key)) return;
             response.setHeader(key, value);
         });
 
-        const responseBody = Buffer.from(await proxyResponse.arrayBuffer());
-        response.end(responseBody);
+        if (contentType.includes("application/json")) {
+            response.end(JSON.stringify(rewritePipedImageUrls(await proxyResponse.json(), request)));
+            return;
+        }
+
+        response.end(Buffer.from(await proxyResponse.arrayBuffer()));
     } catch (error) {
         applyCorsHeaders(response);
         response.writeHead(502, { "Content-Type": "application/json" });
