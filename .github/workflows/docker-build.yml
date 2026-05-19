@@ -74,7 +74,7 @@ jobs:
               run: |
                   mkdir -p release-assets
                   cp compose.ghcr.yml release-assets/compose.yml
-                                    cp .env.release.example release-assets/env.example
+                                    sed "s/^PIPEDKODI_TAG=.*/PIPEDKODI_TAG=${{ github.event.release.tag_name }}/" .env.release.example > release-assets/env.example
                   printf '%s\n' "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.release.tag_name }}" > release-assets/image-tag.txt
                   printf '%s\n' "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" > release-assets/image-digest.txt
             - name: Upload release assets
