@@ -14,6 +14,7 @@ const ytDlpTimeoutMs = Number(process.env.YT_DLP_TIMEOUT_MS ?? 30000);
 const kodiRequestTimeoutMs = Number(process.env.KODI_REQUEST_TIMEOUT_MS ?? 5000);
 const kodiPollIntervalMs = Number(process.env.KODI_POLL_INTERVAL_MS ?? 1000);
 const kodiBufferingGraceMs = Number(process.env.KODI_BUFFERING_GRACE_MS ?? 12000);
+const emptyRoomRetentionMs = Number(process.env.REMOTE_EMPTY_ROOM_RETENTION_MS ?? 30000);
 const silentAudioSampleRate = 8000;
 const silentAudioMaxDurationSeconds = 60 * 60 * 12;
 const silentAudioChunkSizeBytes = 64 * 1024;
@@ -536,6 +537,7 @@ function getOrCreateRoom(sessionId) {
             playerState: null,
             playbackTarget: "player",
             sponsorSettings: null,
+            disposeTimer: null,
             kodi: {
                 config: null,
                 pollTimer: null,
@@ -555,7 +557,13 @@ function getOrCreateRoom(sessionId) {
         });
     }
 
-    return rooms.get(sessionId);
+    const room = rooms.get(sessionId);
+    if (room.disposeTimer) {
+        clearTimeout(room.disposeTimer);
+        room.disposeTimer = null;
+    }
+
+    return room;
 }
 
 function sanitizeKodiUrl(rawValue) {
@@ -789,10 +797,24 @@ function stopKodiPolling(room) {
 
 function maybeDisposeRoom(sessionId) {
     const room = rooms.get(sessionId);
-    if (room && room.clients.size === 0) {
-        stopKodiPolling(room);
-        rooms.delete(sessionId);
+    if (!room || room.clients.size > 0) {
+        if (room?.disposeTimer) {
+            clearTimeout(room.disposeTimer);
+            room.disposeTimer = null;
+        }
+        return;
     }
+
+    if (room.disposeTimer) return;
+
+    room.disposeTimer = setTimeout(() => {
+        const currentRoom = rooms.get(sessionId);
+        if (!currentRoom || currentRoom.clients.size > 0) return;
+
+        stopKodiPolling(currentRoom);
+        currentRoom.disposeTimer = null;
+        rooms.delete(sessionId);
+    }, emptyRoomRetentionMs);
 }
 
 function publishPlayerState(room, nextState, excludeSocket = null) {
