@@ -101,22 +101,18 @@
                     v-model="remotePlaybackTarget"
                     class="rounded-lg bg-light-200 px-3 py-1.5 text-sm text-gray-700 dark:bg-dark-300 dark:text-gray-200"
                 >
+                    <option value="device">On device</option>
                     <option value="player">Web player</option>
                     <option value="kodi">Kodi</option>
                 </select>
             </label>
-            <label class="flex cursor-pointer items-center justify-between border-t border-gray-100 px-4 py-3.5 dark:border-dark-100">
-                <span class="text-sm font-medium">Route clicks to remote playback</span>
-                <input v-model="remoteBrowseEnabled" type="checkbox" class="toggle" />
-            </label>
-            <div class="border-t border-gray-100 px-4 py-3 text-sm dark:border-dark-100">
+            <div v-if="isKodiActive && (kodiStatus.error || !kodiStatus.configured)" class="border-t border-gray-100 px-4 py-3 text-sm dark:border-dark-100">
                 <div class="flex items-center justify-between gap-3">
                     <div>
-                        <p class="font-medium text-gray-800 dark:text-gray-100">Active target: {{ activePlaybackTargetLabel }}</p>
-                        <p v-if="isKodiActive" class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        <p class="text-xs text-gray-500 dark:text-gray-400">
                             {{ kodiAddress || "Kodi endpoint not configured" }}
                         </p>
-                        <p v-if="isKodiActive && kodiStatus.error" class="mt-1 text-xs text-red-600 dark:text-red-400">
+                        <p v-if="kodiStatus.error" class="mt-1 text-xs text-red-600 dark:text-red-400">
                             {{ kodiStatus.error }}
                         </p>
                     </div>
@@ -136,10 +132,7 @@
         >
             <div class="px-4 py-3.5">
                 <p class="text-sm font-semibold">Kodi navigation</p>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    Directional commands are sent to Kodi when this room is using the Kodi backend.
-                </p>
-                <div class="mt-4 flex justify-center">
+                <div class="mt-4 flex items-center justify-center gap-5">
                     <div class="grid grid-cols-3 gap-2">
                         <span />
                         <button class="ctrl-pad-btn" aria-label="Up" @click="sendControl('up')"><i-fa6-solid-chevron-up /></button>
@@ -151,14 +144,28 @@
                         <button class="ctrl-pad-btn" aria-label="Down" @click="sendControl('down')"><i-fa6-solid-chevron-down /></button>
                         <span />
                     </div>
+                    <div class="flex flex-col items-center gap-1.5">
+                        <i-fa6-solid-volume-high class="size-3.5 text-gray-400 dark:text-gray-500" />
+                        <input
+                            v-model.number="kodiVolume"
+                            type="range"
+                            min="0"
+                            max="100"
+                            step="1"
+                            class="volume-slider-vert"
+                            @input="debouncedCommitVolume"
+                        />
+                        <i-fa6-solid-volume-off class="size-3.5 text-gray-400 dark:text-gray-500" />
+                        <span class="text-[10px] tabular-nums text-gray-400 dark:text-gray-500">{{ kodiVolume }}%</span>
+                    </div>
                 </div>
                 <div class="mt-3 flex justify-center gap-2">
                     <button class="ctrl-btn" aria-label="Back" @click="sendControl('back')">
-                        <i-fa6-solid-arrow-left />
+                        <i-fa6-solid-arrow-left class="size-5" />
                         <span class="text-[10px]">Back</span>
                     </button>
                     <button class="ctrl-btn" aria-label="Home" @click="sendControl('home')">
-                        <i-fa6-solid-house />
+                        <i-fa6-solid-house class="size-5" />
                         <span class="text-[10px]">Home</span>
                     </button>
                 </div>
@@ -291,7 +298,6 @@ import {
     useKodiUsername,
     useRemotePlaybackTarget,
     updateRemoteMediaSession,
-    useRemoteBrowseEnabled,
     useRemoteSessionId,
 } from "@/composables/useRemotePlayback.js";
 
@@ -299,7 +305,6 @@ const route = useRoute();
 const router = useRouter();
 
 const remoteSessionId = useRemoteSessionId(null);
-const remoteBrowseEnabled = useRemoteBrowseEnabled(true);
 const remotePlaybackTarget = useRemotePlaybackTarget("player");
 const kodiAddress = useKodiAddress();
 const kodiUsername = useKodiUsername();
@@ -314,6 +319,7 @@ const kodiStatus = ref({
     connected: false,
     error: null,
 });
+const kodiVolume = ref(50);
 
 // Description
 const videoDescription = ref("");
@@ -429,7 +435,9 @@ function sendControl(action, payload = {}) {
 }
 
 function syncRemoteSettings() {
-    activePlaybackTarget.value = remotePlaybackTarget.value === "kodi" ? "kodi" : "player";
+    if (remotePlaybackTarget.value !== "device") {
+        activePlaybackTarget.value = remotePlaybackTarget.value === "kodi" ? "kodi" : "player";
+    }
     remoteClient?.send("settings", buildRemoteSettingsPayload());
 }
 
@@ -593,6 +601,16 @@ function commitSeek() {
     sendControl("seek", { currentTime: Number(scrubberPosition.value ?? 0) });
 }
 
+function commitVolume() {
+    sendControl("volumeset", { volume: kodiVolume.value });
+}
+
+let volumeDebounceTimer = null;
+function debouncedCommitVolume() {
+    if (volumeDebounceTimer) window.clearTimeout(volumeDebounceTimer);
+    volumeDebounceTimer = window.setTimeout(commitVolume, 80);
+}
+
 function connectRemoteController() {
     remoteClient = createRemoteClient({
         sessionId: sessionId.value,
@@ -611,6 +629,16 @@ function connectRemoteController() {
                     connected: Boolean(message.payload?.kodi?.connected),
                     error: message.payload?.kodi?.error ?? null,
                 };
+                const roomKodiConfig = message.payload?.kodi?.config;
+                if (roomKodiConfig?.address) {
+                    kodiAddress.value = roomKodiConfig.address;
+                    kodiUsername.value = roomKodiConfig.username ?? "";
+                    kodiPassword.value = roomKodiConfig.password ?? "";
+                }
+                const roomVolume = message.payload?.kodi?.volume;
+                if (typeof roomVolume === "number") {
+                    kodiVolume.value = roomVolume;
+                }
                 applyRemotePayload(message.payload?.media);
                 applyPlayerState(message.payload?.playerState);
             }
@@ -627,9 +655,9 @@ function connectRemoteController() {
 }
 
 watch(
-    remoteBrowseEnabled,
+    remotePlaybackTarget,
     value => {
-        if (!value && route.path !== "/remote/controller") {
+        if (value === "device" && route.path !== "/remote/controller") {
             router.replace({ path: "/remote/controller", query: { session: sessionId.value } });
         }
     },
@@ -650,7 +678,6 @@ onMounted(async () => {
 
     sessionId.value = nextSessionId;
     remoteSessionId.value = nextSessionId;
-    remoteBrowseEnabled.value = true;
     relayUrl.value = getRemoteRelayUrl();
     activePlaybackTarget.value = remotePlaybackTarget.value === "kodi" ? "kodi" : "player";
 
@@ -673,6 +700,10 @@ onUnmounted(() => {
     if (scrubberTimer) {
         window.clearInterval(scrubberTimer);
         scrubberTimer = null;
+    }
+    if (volumeDebounceTimer) {
+        window.clearTimeout(volumeDebounceTimer);
+        volumeDebounceTimer = null;
     }
     cleanupLockScreenActivation?.();
     cleanupMediaActions?.();
@@ -698,6 +729,14 @@ onUnmounted(() => {
 
     .ctrl-pad-center {
         @apply flex size-11 items-center justify-center rounded-xl bg-[#155bd0] text-white shadow-md transition-opacity active:opacity-80;
+    }
+
+    .volume-slider-vert {
+        writing-mode: vertical-lr;
+        direction: rtl;
+        height: 9rem;
+        cursor: pointer;
+        accent-color: #155bd0;
     }
 
     .scrubber {

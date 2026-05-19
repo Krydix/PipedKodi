@@ -545,6 +545,7 @@ function getOrCreateRoom(sessionId) {
                 pendingSeekTime: null,
                 sponsorSegments: [],
                 skippedSponsorSegments: new Set(),
+                volume: 50,
                 status: {
                     configured: false,
                     connected: false,
@@ -738,7 +739,11 @@ function buildSessionState(room) {
         playerState: room.playerState,
         peers: getPeerCounts(room),
         playbackTarget: room.playbackTarget,
-        kodi: getKodiStatus(room),
+        kodi: {
+            ...getKodiStatus(room),
+            config: room.kodi.config ?? null,
+            volume: room.kodi.volume ?? 50,
+        },
     };
 }
 
@@ -863,10 +868,19 @@ async function syncKodiRoomState(sessionId, room) {
             return;
         }
 
-        const properties = await callKodiJsonRpc(room.kodi.config, "Player.GetProperties", {
-            playerid: playerId,
-            properties: ["time", "totaltime", "speed", "percentage"],
-        });
+        const [properties, appProperties] = await Promise.all([
+            callKodiJsonRpc(room.kodi.config, "Player.GetProperties", {
+                playerid: playerId,
+                properties: ["time", "totaltime", "speed", "percentage"],
+            }),
+            callKodiJsonRpc(room.kodi.config, "Application.GetProperties", {
+                properties: ["volume"],
+            }),
+        ]);
+
+        const newVolume = Number(appProperties?.volume ?? room.kodi.volume ?? 50);
+        const volumeChanged = newVolume !== room.kodi.volume;
+        room.kodi.volume = newVolume;
 
         let currentTime = fromKodiTime(properties?.time);
         const duration = fromKodiTime(properties?.totaltime) || Number(room.media?.duration ?? 0);
@@ -892,6 +906,9 @@ async function syncKodiRoomState(sessionId, room) {
         }
 
         const buffering = room.kodi.awaitingPlaybackResume || room.kodi.bufferingUntil > now;
+        if (volumeChanged) {
+            broadcastSessionState(room);
+        }
         publishPlayerState(room, {
             videoId: room.media?.videoId ?? room.playerState?.videoId ?? null,
             currentTime,
@@ -983,7 +1000,7 @@ async function sendKodiControl(sessionId, room, control) {
 
     try {
         const action = control.action;
-        const playerId = ["up", "down", "left", "right", "select", "back", "home"].includes(action)
+        const playerId = ["up", "down", "left", "right", "select", "back", "home", "volumeup", "volumedown", "volumeset"].includes(action)
             ? null
             : await getKodiPlayerId(room.kodi.config);
 
@@ -1067,7 +1084,19 @@ async function sendKodiControl(sessionId, room, control) {
             case "home":
                 await callKodiJsonRpc(room.kodi.config, "Input.Home");
                 break;
-            default:
+            case "volumeup":
+                await callKodiJsonRpc(room.kodi.config, "Input.ExecuteAction", { action: "volumeup" });
+                break;
+            case "volumedown":
+                await callKodiJsonRpc(room.kodi.config, "Input.ExecuteAction", { action: "volumedown" });
+                break;
+            case "volumeset": {
+                const volume = Math.min(100, Math.max(0, Math.round(Number(control.volume ?? 50))));
+                await callKodiJsonRpc(room.kodi.config, "Application.SetVolume", { volume });
+                room.kodi.volume = volume;
+                broadcastSessionState(room);
+                break;
+            }
                 return;
         }
 
