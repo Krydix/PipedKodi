@@ -22,6 +22,17 @@
             <span>Feed</span>
         </router-link>
 
+        <button
+            role="tab"
+            :aria-selected="isActive('search')"
+            :class="['bottom-nav-item', { active: isActive('search') }]"
+            aria-label="Search"
+            @click="onSearchTabClick"
+        >
+            <i-fa6-solid-magnifying-glass class="bottom-nav-icon" />
+            <span>Search</span>
+        </button>
+
         <router-link
             to="/remote/controller"
             role="tab"
@@ -37,9 +48,12 @@
 
 <script setup>
 import { computed } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
+import { useSearchFocus } from "@/composables/useSearchFocus.js";
 
 const route = useRoute();
+const router = useRouter();
+const { triggerSearchFocus } = useSearchFocus();
 
 const hideNav = computed(() => route.path === "/remote/player" || route.query.remoteRole === "player");
 
@@ -52,14 +66,30 @@ function isActive(tab) {
             return (
                 path.startsWith("/feed") ||
                 path.startsWith("/channel") ||
-                path.startsWith("/results") ||
                 path.startsWith("/playlists") ||
                 path.startsWith("/history")
             );
+        case "search":
+            return path.startsWith("/results");
         case "remote":
             return path.startsWith("/remote/controller");
         default:
             return false;
+    }
+}
+
+function onSearchTabClick() {
+    if (isActive("search")) {
+        // Already on search tab — just re-focus the search bar
+        triggerSearchFocus();
+    } else {
+        // Navigate to search results, preserving existing query if any
+        const existingQuery = route.query.search_query;
+        router.push(existingQuery ? { name: "SearchResults", query: { search_query: existingQuery } } : { name: "SearchResults" }).then(() => {
+            if (!existingQuery) {
+                triggerSearchFocus();
+            }
+        });
     }
 }
 </script>
@@ -98,6 +128,9 @@ function isActive(tab) {
     flex: 1;
     font-size: 10px;
     letter-spacing: 0.01em;
+    border: none;
+    background: none;
+    cursor: pointer;
     color: #8e8e93;
     transition: color 0.15s ease;
     padding: 6px 0;

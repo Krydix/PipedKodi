@@ -67,16 +67,19 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, nextTick } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import SearchSuggestions from "./SearchSuggestions.vue";
 import ClearButton from "./ui/ClearButton.vue";
 import hotkeys from "hotkeys-js";
 import { fetchJson, authApiUrl, getAuthToken } from "@/composables/useApi.js";
 import { getPreferenceBoolean, getPreferenceString } from "@/composables/usePreferences.js";
+import { useSearchFocus } from "@/composables/useSearchFocus.js";
 
 const router = useRouter();
 const route = useRoute();
+
+const { focusTrigger } = useSearchFocus();
 
 const videoSearch = ref(null);
 const searchSuggestions = ref(null);
@@ -178,6 +181,10 @@ function submitSearch(e) {
     }
     return;
 }
+
+watch(focusTrigger, () => {
+    nextTick(() => videoSearch.value?.focus());
+});
 
 onMounted(() => {
     fetchAuthConfig();
