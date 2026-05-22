@@ -5,6 +5,7 @@ import Icons from "unplugin-icons/vite";
 import Components from "unplugin-vue-components/vite";
 import IconsResolver from "unplugin-icons/resolver";
 import legacy from "@vitejs/plugin-legacy";
+import VueI18nPlugin from "@intlify/unplugin-vue-i18n/vite";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 import eslintPlugin from "vite-plugin-eslint";
@@ -28,6 +29,9 @@ export default defineConfig({
         Components({
             resolvers: [IconsResolver()],
             dts: false,
+        }),
+        VueI18nPlugin({
+            include: path.resolve(__dirname, "./src/locales/**"),
         }),
         enableLegacyBuild
             ? legacy({
