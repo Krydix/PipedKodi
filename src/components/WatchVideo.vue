@@ -388,6 +388,7 @@ import {
 import { updateWatched } from "@/composables/useMisc.js";
 import { getPlaylist } from "@/composables/usePlaylists.js";
 import { createRemoteClient, normalizeRemoteSessionId } from "@/composables/useRemotePlayback.js";
+import { enqueueYouTubeSyncWatchEvent, isYouTubeSyncConnected } from "@/composables/useYouTubeSync.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -424,6 +425,9 @@ const theaterMode = ref(false);
 let loading = false;
 let remoteClient = null;
 let lastRemoteStateAt = 0;
+let hasSentYouTubeSyncStart = false;
+let lastYouTubeSyncProgressAt = 0;
+let lastYouTubeSyncProgressTime = 0;
 
 const isListening = computed(() => {
     return getPreferenceBoolean("listen", false);
@@ -669,6 +673,54 @@ function navigate(time) {
 function onTimeUpdate(time) {
     currentTime.value = time;
     sendRemotePlayerState();
+    maybeSendYouTubeSyncProgress(time);
+}
+
+function shouldSendYouTubeSyncWatchEvent() {
+    return isYouTubeSyncConnected() && !isRemotePlayer.value && Boolean(getVideoId()) && !video.value?.error;
+}
+
+async function sendYouTubeSyncWatchEvent(eventType, overrides = {}) {
+    if (!shouldSendYouTubeSyncWatchEvent()) return;
+
+    try {
+        await enqueueYouTubeSyncWatchEvent({
+            eventType,
+            videoId: getVideoId(),
+            currentTime: Number(overrides.currentTime ?? videoPlayer.value?.getCurrentTime?.() ?? currentTime.value ?? 0),
+            duration: Number(overrides.duration ?? videoPlayer.value?.getDuration?.() ?? video.value?.duration ?? 0),
+            playbackRate: Number(overrides.playbackRate ?? videoPlayer.value?.getPlaybackRate?.() ?? 1),
+            paused: Boolean(overrides.paused ?? videoPlayer.value?.isPaused?.() ?? false),
+            buffering: Boolean(overrides.buffering ?? videoPlayer.value?.isBuffering?.() ?? false),
+        });
+    } catch (error) {
+        console.error("Unable to relay YouTube watch feedback.", error);
+    }
+}
+
+function maybeSendYouTubeSyncProgress(time) {
+    if (!shouldSendYouTubeSyncWatchEvent()) return;
+
+    const now = Date.now();
+    const shouldSendStart = !hasSentYouTubeSyncStart && time >= 0;
+    const shouldSendProgress =
+        hasSentYouTubeSyncStart &&
+        ((now - lastYouTubeSyncProgressAt >= 15000 && Math.abs(time - lastYouTubeSyncProgressTime) >= 5) ||
+            Math.abs(time - lastYouTubeSyncProgressTime) >= 30);
+
+    if (shouldSendStart) {
+        hasSentYouTubeSyncStart = true;
+        lastYouTubeSyncProgressAt = now;
+        lastYouTubeSyncProgressTime = time;
+        void sendYouTubeSyncWatchEvent("start", { currentTime: time });
+        return;
+    }
+
+    if (shouldSendProgress) {
+        lastYouTubeSyncProgressAt = now;
+        lastYouTubeSyncProgressTime = time;
+        void sendYouTubeSyncWatchEvent("progress", { currentTime: time });
+    }
 }
 
 function buildRemoteMediaPayload() {
@@ -733,6 +785,16 @@ function onRemotePlaybackStateChange(state) {
               };
 
     sendRemotePlayerState(true, nextState);
+
+    if (nextState.paused) {
+        void sendYouTubeSyncWatchEvent("pause", {
+            currentTime: currentTime.value,
+            paused: true,
+            buffering: nextState.buffering,
+        });
+    } else if (!hasSentYouTubeSyncStart) {
+        maybeSendYouTubeSyncProgress(currentTime.value);
+    }
 }
 
 function applyRemoteLoad(remoteMedia) {
@@ -799,6 +861,12 @@ function connectRemotePlayerSession() {
 }
 
 function onVideoEnded() {
+    void sendYouTubeSyncWatchEvent("ended", {
+        currentTime: videoPlayer.value?.getDuration?.() ?? currentTime.value,
+        paused: true,
+        buffering: false,
+    });
+
     if (
         !selectedAutoLoop.value &&
         ((selectedAutoPlay.value >= 1 && playlist.value?.relatedStreams?.length > index.value) ||

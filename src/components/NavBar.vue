@@ -22,10 +22,16 @@
 
         <!-- Nav icons (desktop only — bottom nav handles mobile) -->
         <ul class="ml-auto hidden list-none items-center gap-0.5 md:flex">
-            <li v-if="shouldShowTrending">
+            <li v-if="shouldShowYouTubeHome">
+                <router-link to="/" title="Home" aria-label="Home" class="nav-icon-btn"><i-fa6-solid-house /></router-link>
+            </li>
+            <li v-if="shouldShowYouTubeHome">
+                <router-link to="/feed" :title="$t('titles.feed')" aria-label="Feed" class="nav-icon-btn"><i-fa6-solid-play /></router-link>
+            </li>
+            <li v-if="shouldShowTrending && !shouldShowYouTubeHome">
                 <router-link to="/trending" :title="$t('titles.trending')" aria-label="Trending" class="nav-icon-btn"><i-fa6-solid-fire /></router-link>
             </li>
-            <li v-if="!shouldShowTrending">
+            <li v-if="!shouldShowTrending && !shouldShowYouTubeHome">
                 <router-link to="/feed" :title="$t('titles.feed')" aria-label="Feed" class="nav-icon-btn"><i-fa6-solid-play /></router-link>
             </li>
             <li>
@@ -44,6 +50,9 @@
                 <router-link to="/remote/player" title="TV player" aria-label="TV player" class="nav-icon-btn"><i-fa6-solid-tv /></router-link>
             </li>
             <li>
+                <router-link to="/youtube-sync" title="YouTube Sync" aria-label="YouTube Sync" class="nav-icon-btn">YT</router-link>
+            </li>
+            <li>
                 <router-link to="/preferences#kodi" title="Kodi settings" aria-label="Kodi settings" class="nav-icon-btn">Kodi</router-link>
             </li>
             <li>
@@ -54,6 +63,7 @@
         <!-- Mobile-only icon row (login + preferences) -->
         <div class="flex items-center gap-0.5 md:hidden">
             <router-link v-if="shouldShowLogin" to="/login" :title="$t('titles.login')" aria-label="Login" class="nav-icon-btn"><i-fa6-solid-user /></router-link>
+            <router-link to="/youtube-sync" title="YouTube Sync" aria-label="YouTube Sync" class="nav-icon-btn">YT</router-link>
             <router-link to="/preferences" aria-label="Preferences" class="nav-icon-btn"><i-fa6-solid-gear /></router-link>
         </div>
     </nav>
@@ -75,6 +85,7 @@ import hotkeys from "hotkeys-js";
 import { fetchJson, authApiUrl, getAuthToken } from "@/composables/useApi.js";
 import { getPreferenceBoolean, getPreferenceString } from "@/composables/usePreferences.js";
 import { useSearchFocus } from "@/composables/useSearchFocus.js";
+import { useYouTubeSyncConnected } from "@/composables/useYouTubeSync.js";
 
 const router = useRouter();
 const route = useRoute();
@@ -88,6 +99,7 @@ const searchText = ref("");
 const suggestionsVisible = ref(false);
 const showTopNav = ref(false);
 const registrationDisabled = ref(false);
+const youtubeSyncConnected = useYouTubeSyncConnected();
 
 const shouldShowLogin = computed(() => {
     return getAuthToken() == null;
@@ -103,6 +115,10 @@ const shouldShowHistory = computed(() => {
 
 const shouldShowTrending = computed(() => {
     return getPreferenceString("homepage", "trending") != "trending";
+});
+
+const shouldShowYouTubeHome = computed(() => {
+    return youtubeSyncConnected.value;
 });
 
 const showSearchHistory = computed(() => {

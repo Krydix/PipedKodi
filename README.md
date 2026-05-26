@@ -85,6 +85,30 @@ docker compose --env-file .env -f compose.yml up -d
 
 The compose file pulls from `ghcr.io/krydix/pipedkodi`, so users do not need a separate `docker pull` step.
 
+### Optional YouTube Sync Connector
+
+This fork also ships an optional self-hosted connector container under `connector/`.
+
+The connector is separate from the normal Piped API flow. It is meant to hold a user's own YouTube web session server-side and expose sanitized endpoints for this frontend such as:
+
+-   `GET /api/ytsync/session`
+-   `POST /api/ytsync/session/import`
+-   `GET /api/ytsync/home`
+-   `POST /api/ytsync/watch`
+
+Current status:
+
+-   `home` can fetch and normalize the authenticated YouTube home page using an imported cookie session.
+-   watch feedback is only queued locally for now; it is not yet delivered upstream to YouTube.
+
+To run it locally:
+
+```sh
+pnpm youtube-connector
+```
+
+To run it with Docker Compose, start the optional `youtube-sync` service from `compose.ghcr.yml` and set `YT_SYNC_ENCRYPTION_KEY` in your `.env` file.
+
 The source code of the documentation website is available at https://github.com/TeamPiped/Documentation.
 
 ### Documentation

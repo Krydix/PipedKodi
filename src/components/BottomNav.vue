@@ -61,7 +61,7 @@ function isActive(tab) {
     const path = route.path;
     switch (tab) {
         case "home":
-            return path === "/" || path.startsWith("/trending") || path.startsWith("/watch");
+            return path === "/" || path.startsWith("/home") || path.startsWith("/trending") || path.startsWith("/watch");
         case "feed":
             return (
                 path.startsWith("/feed") ||

@@ -31,6 +31,14 @@
             <div>
                 <Button v-t="'titles.login'" @click="login" />
             </div>
+            <div>
+                <router-link
+                    to="/youtube-sync"
+                    class="text-sm text-[#155bd0] underline dark:text-[#5b9cf6]"
+                >
+                    Connect YouTube Sync instead
+                </router-link>
+            </div>
         </form>
     </div>
 </template>

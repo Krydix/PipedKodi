@@ -9,6 +9,7 @@
         "build:full": "VITE_BUILD_LEGACY=true VITE_BUILD_SOURCEMAP=true VITE_LINT_BUILD=true vite build",
         "preview": "vite preview",
         "remote-relay": "node ./server/remote-relay.mjs",
+        "youtube-connector": "node ./connector/server.mjs",
         "format": "prettier -w --ignore-path .gitignore **/**.{js,vue,json}",
         "lint": "eslint --fix --color ."
     },

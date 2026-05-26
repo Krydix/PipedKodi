@@ -11,3 +11,23 @@ services:
             HTTP_MODE: ${HTTP_MODE:-https}
             HTTP_PORT: ${HTTP_PORT:-8080}
             HTTP_WORKERS: ${HTTP_WORKERS:-}
+
+    youtube-sync:
+        build:
+            context: .
+            dockerfile: connector/Dockerfile
+        restart: unless-stopped
+        ports:
+            - ${YT_SYNC_PORT:-8091}:8091
+        environment:
+            PORT: 8091
+            HOST: 0.0.0.0
+            YT_SYNC_ALLOWED_ORIGIN: ${YT_SYNC_ALLOWED_ORIGIN:-*}
+            YT_SYNC_ACCEPT_LANGUAGE: ${YT_SYNC_ACCEPT_LANGUAGE:-en-US,en;q=0.9}
+            YT_SYNC_ENCRYPTION_KEY: ${YT_SYNC_ENCRYPTION_KEY:-}
+            YT_SYNC_SESSION_FILE: /data/youtube-sync-session.json
+        volumes:
+            - youtube-sync-data:/data
+
+volumes:
+    youtube-sync-data:

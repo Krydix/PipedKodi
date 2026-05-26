@@ -1,4 +1,5 @@
 import { getPreferenceBoolean, getPreferenceString } from "./usePreferences.js";
+import { isYouTubeSyncConnected } from "./useYouTubeSync.js";
 
 export async function updateWatched(videos) {
     if (window.db && getPreferenceBoolean("watchHistory", false)) {
@@ -27,7 +28,7 @@ export function download(text, filename, mimeType) {
     elem.remove();
 }
 
-export function getHomePage() {
+export function getConfiguredHomePage() {
     switch (getPreferenceString("homepage", "trending")) {
         case "trending":
             return "/trending";
@@ -36,4 +37,9 @@ export function getHomePage() {
         default:
             return undefined;
     }
+}
+
+export function getHomePage() {
+    if (isYouTubeSyncConnected()) return "/home";
+    return getConfiguredHomePage();
 }

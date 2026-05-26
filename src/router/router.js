@@ -1,11 +1,15 @@
 import { createRouter, createWebHistory } from "vue-router";
-import { getHomePage } from "@/composables/useMisc.js";
 
 const routes = [
     {
         path: "/",
         name: "Home",
-        redirect: () => getHomePage() ?? "/trending",
+        component: () => import("../components/HomeRedirectPage.vue"),
+    },
+    {
+        path: "/home",
+        name: "YouTubeHome",
+        component: () => import("../components/YouTubeHomePage.vue"),
     },
     {
         path: "/trending",
@@ -66,6 +70,11 @@ const routes = [
         path: "/login",
         name: "Login",
         component: () => import("../components/LoginPage.vue"),
+    },
+    {
+        path: "/youtube-sync",
+        name: "YouTube Sync",
+        component: () => import("../components/YouTubeSyncPage.vue"),
     },
     {
         path: "/register",

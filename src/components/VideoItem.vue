@@ -17,7 +17,7 @@
         </a>
 
         <div class="flex items-start pt-1">
-            <router-link :to="item.uploaderUrl" @click.stop>
+            <router-link v-if="item.uploaderUrl" :to="item.uploaderUrl" @click.stop>
                 <img
                     v-if="item.uploaderAvatar"
                     loading="lazy"
@@ -27,6 +27,14 @@
                     height="68"
                 />
             </router-link>
+            <img
+                v-else-if="item.uploaderAvatar"
+                loading="lazy"
+                :src="item.uploaderAvatar"
+                class="mt-0.5 mr-0.5 size-8 shrink-0 rounded-full"
+                width="68"
+                height="68"
+            />
 
             <div class="min-w-0 flex-1 px-2">
                 <router-link
@@ -39,6 +47,14 @@
                     <span class="truncate" v-text="item.uploaderName" />
                     <i-fa6-solid-check v-if="item.uploaderVerified" class="shrink-0" />
                 </router-link>
+                <div
+                    v-else-if="item.uploaderName && !hideChannel"
+                    class="inline-flex max-w-full items-center gap-1 text-xs text-gray-500 dark:text-gray-400"
+                    :title="item.uploaderName"
+                >
+                    <span class="truncate" v-text="item.uploaderName" />
+                    <i-fa6-solid-check v-if="item.uploaderVerified" class="shrink-0" />
+                </div>
 
                 <div
                     v-if="item.views >= 0 || item.uploadedDate"
