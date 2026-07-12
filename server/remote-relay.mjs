@@ -1,9 +1,11 @@
 import http from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
 import { URL } from "node:url";
 import { promisify } from "node:util";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 
 const execFileAsync = promisify(execFile);
 const port = Number(process.env.PORT ?? 8090);
@@ -15,6 +17,11 @@ const kodiRequestTimeoutMs = Number(process.env.KODI_REQUEST_TIMEOUT_MS ?? 5000)
 const kodiPollIntervalMs = Number(process.env.KODI_POLL_INTERVAL_MS ?? 1000);
 const kodiBufferingGraceMs = Number(process.env.KODI_BUFFERING_GRACE_MS ?? 12000);
 const emptyRoomRetentionMs = Number(process.env.REMOTE_EMPTY_ROOM_RETENTION_MS ?? 30000);
+const nativeBrowserDebugPort = Number(process.env.YOUTUBE_NATIVE_BROWSER_DEBUG_PORT ?? 9222);
+const nativeBrowserDebugUrl = `http://127.0.0.1:${nativeBrowserDebugPort}`;
+const nativeBrowserProfileDir = process.env.YOUTUBE_NATIVE_BROWSER_PROFILE_DIR ?? path.join(process.env.HOME ?? process.cwd(), "Library", "Application Support", "PipedKodi", "youtube-browser-profile");
+const nativeBrowserExecutable = process.env.YOUTUBE_NATIVE_BROWSER_EXECUTABLE ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+let nativeBrowserProcess = null;
 const silentAudioSampleRate = 8000;
 const silentAudioMaxDurationSeconds = 60 * 60 * 12;
 const silentAudioChunkSizeBytes = 64 * 1024;
@@ -1256,7 +1263,113 @@ function sanitizePlayerState(payload, currentMedia) {
     };
 }
 
-const server = http.createServer((request, response) => {
+function isLoopbackRequest(request) {
+    const address = request.socket.remoteAddress ?? "";
+    return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+async function fetchNativeBrowserDebug(pathname) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+    try {
+        const response = await fetch(`${nativeBrowserDebugUrl}${pathname}`, { signal: controller.signal });
+        if (!response.ok) return null;
+        return await response.json();
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+async function isNativeBrowserRunning() {
+    const version = await fetchNativeBrowserDebug("/json/version");
+    return Boolean(version?.webSocketDebuggerUrl);
+}
+
+function startNativeBrowser() {
+    if (nativeBrowserProcess && !nativeBrowserProcess.killed) return;
+    if (!existsSync(nativeBrowserExecutable)) {
+        throw new Error("Google Chrome was not found. Install it or set YOUTUBE_NATIVE_BROWSER_EXECUTABLE to its executable path.");
+    }
+
+    mkdirSync(nativeBrowserProfileDir, { recursive: true });
+    nativeBrowserProcess = spawn(
+        nativeBrowserExecutable,
+        [
+            `--remote-debugging-address=127.0.0.1`,
+            `--remote-debugging-port=${nativeBrowserDebugPort}`,
+            "--remote-allow-origins=*",
+            `--user-data-dir=${nativeBrowserProfileDir}`,
+            "--disable-gpu",
+            "--no-default-browser-check",
+            "--no-first-run",
+            "https://www.youtube.com/",
+        ],
+        { detached: true, stdio: "ignore" },
+    );
+    nativeBrowserProcess.unref();
+    nativeBrowserProcess.once("exit", () => {
+        nativeBrowserProcess = null;
+    });
+}
+
+async function getNativeBrowserCookies() {
+    const version = await fetchNativeBrowserDebug("/json/version");
+    if (!version?.webSocketDebuggerUrl) {
+        throw new Error("The local Chrome window is not ready yet. Finish opening it, then retry.");
+    }
+
+    return await new Promise((resolve, reject) => {
+        const socket = new WebSocket(version.webSocketDebuggerUrl);
+        const timeoutId = setTimeout(() => {
+            socket.close();
+            reject(new Error("Timed out while reading the local Chrome session."));
+        }, 5000);
+
+        socket.once("open", () => {
+            socket.send(JSON.stringify({ id: 1, method: "Storage.getCookies" }));
+        });
+        socket.on("message", rawValue => {
+            let message;
+            try {
+                message = JSON.parse(String(rawValue));
+            } catch {
+                return;
+            }
+            if (message.id !== 1) return;
+
+            clearTimeout(timeoutId);
+            socket.close();
+            if (message.error) {
+                reject(new Error(message.error.message ?? "Unable to read cookies from Chrome."));
+                return;
+            }
+
+            resolve(
+                (message.result?.cookies ?? [])
+                    .filter(cookie => /(^|\.)youtube\.com$|(^|\.)google\.com$/i.test(cookie.domain))
+                    .map(({ name, value, domain, path, expires, httpOnly, secure, sameSite }) => ({
+                        name,
+                        value,
+                        domain,
+                        path,
+                        expires,
+                        httpOnly,
+                        secure,
+                        sameSite,
+                    })),
+            );
+        });
+        socket.once("error", error => {
+            clearTimeout(timeoutId);
+            reject(error);
+        });
+    });
+}
+
+const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
 
     applyCorsHeaders(response);
@@ -1298,6 +1411,55 @@ const server = http.createServer((request, response) => {
     if (url.pathname === "/api/remote/silent.wav") {
         serveSilentAudio(request, response, url);
         return;
+    }
+
+    if (url.pathname.startsWith("/api/youtube/native-browser/")) {
+        if (!isLoopbackRequest(request)) {
+            response.writeHead(403, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ error: "Native browser sign-in is available only from this computer." }));
+            return;
+        }
+
+        if (url.pathname === "/api/youtube/native-browser/status" && request.method === "GET") {
+            const ready = await isNativeBrowserRunning();
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ ready }));
+            return;
+        }
+
+        if (url.pathname === "/api/youtube/native-browser/start" && request.method === "POST") {
+            try {
+                if (!(await isNativeBrowserRunning())) startNativeBrowser();
+                response.writeHead(200, { "Content-Type": "application/json" });
+                response.end(JSON.stringify({ ok: true }));
+            } catch (error) {
+                console.error("Unable to open the native Chrome sign-in window.", error);
+                response.writeHead(500, { "Content-Type": "application/json" });
+                response.end(JSON.stringify({ error: error?.message ?? "Unable to open the local Chrome window." }));
+            }
+            return;
+        }
+
+        if (url.pathname === "/api/youtube/native-browser/cookies" && request.method === "POST") {
+            try {
+                const cookies = await getNativeBrowserCookies();
+                response.writeHead(200, { "Content-Type": "application/json" });
+                response.end(JSON.stringify({ cookies }));
+            } catch (error) {
+                console.error("Unable to extract cookies from the native Chrome session.", error);
+                response.writeHead(503, { "Content-Type": "application/json" });
+                response.end(JSON.stringify({ error: error?.message ?? "Unable to read the local Chrome session." }));
+            }
+            return;
+        }
+
+        if (url.pathname === "/api/youtube/native-browser/stop" && request.method === "POST") {
+            nativeBrowserProcess?.kill();
+            nativeBrowserProcess = null;
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ ok: true }));
+            return;
+        }
     }
 
     response.writeHead(404, { "Content-Type": "application/json" });

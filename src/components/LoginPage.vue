@@ -39,6 +39,14 @@
                     Connect YouTube Sync instead
                 </router-link>
             </div>
+            <div class="pt-2">
+                <router-link
+                    to="/youtube-browser-auth"
+                    class="text-sm text-[#10b981] underline dark:text-green-400"
+                >
+                    Login to YouTube with browser (recommended)
+                </router-link>
+            </div>
         </form>
     </div>
 </template>

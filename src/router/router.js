@@ -77,6 +77,11 @@ const routes = [
         component: () => import("../components/YouTubeSyncPage.vue"),
     },
     {
+        path: "/youtube-browser-auth",
+        name: "YouTubeBrowserAuth",
+        component: () => import("../components/YouTubeNativeAuthPage.vue"),
+    },
+    {
         path: "/register",
         name: "Register",
         component: () => import("../components/RegisterPage.vue"),

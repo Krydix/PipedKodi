@@ -60,6 +60,7 @@
                         placeholder="SID=...; HSID=...; SSID=..."
                     />
 
+
                     <div class="flex flex-wrap gap-2">
                         <button
                             class="rounded-xl bg-[#155bd0] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#0f49aa] disabled:cursor-not-allowed disabled:opacity-60"
@@ -82,6 +83,12 @@
                         >
                             Refresh home feed
                         </button>
+                        <router-link
+                            to="/youtube-browser-auth"
+                            class="rounded-xl bg-[#10b981] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#059669] dark:bg-green-700 dark:hover:bg-green-600"
+                        >
+                            Login with browser (recommended)
+                        </router-link>
                     </div>
 
                     <p v-if="message" class="text-sm text-green-700 dark:text-green-400">{{ message }}</p>

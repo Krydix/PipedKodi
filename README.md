@@ -99,7 +99,7 @@ The connector is separate from the normal Piped API flow. It is meant to hold a 
 Current status:
 
 -   `home` can fetch and normalize the authenticated YouTube home page using an imported cookie session.
--   watch feedback is only queued locally for now; it is not yet delivered upstream to YouTube.
+-   playback feedback is relayed best-effort to YouTube, including direct playback plus remote web-player and Kodi sessions controlled from this app.
 
 To run it locally:
 

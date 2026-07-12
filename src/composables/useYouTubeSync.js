@@ -1,11 +1,18 @@
 import { getPreferenceBoolean, getPreferenceString, setPreference, usePreferenceBoolean, usePreferenceString } from "./usePreferences.js";
 
 const DEFAULT_YOUTUBE_SYNC_PORT = 8091;
+const DEFAULT_YOUTUBE_BROWSER_PORT = 6080;
+const DEFAULT_YOUTUBE_BROWSER_AUTH_PORT = 8092;
 const YOUTUBE_SYNC_CONNECTED_STORAGE_KEY = "youtubeSyncConnected";
 
 function getDefaultConnectorBaseUrl() {
     const protocol = window.location.protocol === "https:" ? "https:" : "http:";
     return `${protocol}//${window.location.hostname}:${DEFAULT_YOUTUBE_SYNC_PORT}`;
+}
+
+function getDefaultYouTubeBrowserUrl(port) {
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    return `${protocol}//${window.location.hostname}:${port}`;
 }
 
 export function useYouTubeSyncBaseUrl() {
@@ -14,6 +21,14 @@ export function useYouTubeSyncBaseUrl() {
 
 export function getYouTubeSyncBaseUrl() {
     return getPreferenceString("youtubeSyncBaseUrl", getDefaultConnectorBaseUrl());
+}
+
+export function useYouTubeBrowserUrl() {
+    return usePreferenceString("youtubeBrowserUrl", getDefaultYouTubeBrowserUrl(DEFAULT_YOUTUBE_BROWSER_PORT));
+}
+
+export function useYouTubeBrowserAuthBaseUrl() {
+    return usePreferenceString("youtubeBrowserAuthBaseUrl", getDefaultYouTubeBrowserUrl(DEFAULT_YOUTUBE_BROWSER_AUTH_PORT));
 }
 
 export function useYouTubeSyncConnected() {

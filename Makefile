@@ -6,7 +6,7 @@ CONNECTOR_PORT := 8091
 DOCKER_IMAGE ?= pipedkodi:latest
 DOCKERFILE ?= Dockerfile
 
-.PHONY: build build-full relay connector preview run start kill-ports kill-connector-port docker
+.PHONY: build build-full relay connector preview run start dev-up kill-ports kill-connector-port docker
 
 build:
 	$(PNPM) build
@@ -34,12 +34,16 @@ kill-ports:
 
 run: kill-ports build
 	trap 'kill 0' EXIT INT TERM; \
+	$(PNPM) youtube-connector & \
 	$(PNPM) remote-relay & \
 	$(PNPM) preview --host $(HOST) --port $(PREVIEW_PORT) --strictPort & \
 	wait
 
 start: kill-ports
 	trap 'kill 0' EXIT INT TERM; \
+	$(PNPM) youtube-connector & \
 	$(PNPM) remote-relay & \
 	$(PNPM) preview --host $(HOST) --port $(PREVIEW_PORT) --strictPort & \
 	wait
+
+dev-up: run

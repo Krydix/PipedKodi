@@ -300,6 +300,7 @@ import {
     updateRemoteMediaSession,
     useRemoteSessionId,
 } from "@/composables/useRemotePlayback.js";
+import { enqueueYouTubeSyncWatchEvent, isYouTubeSyncConnected } from "@/composables/useYouTubeSync.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -414,6 +415,12 @@ let scrubberTimer = null;
 let lockScreenActivationRequested = false;
 let lockScreenActivationInFlight = null;
 let cleanupLockScreenActivation = null;
+let youtubeSyncVideoId = null;
+let hasSentYouTubeSyncStart = false;
+let hasSentYouTubeSyncEnded = false;
+let lastYouTubeSyncProgressAt = 0;
+let lastYouTubeSyncProgressTime = 0;
+let lastYouTubeSyncPaused = null;
 
 const scrubberMax = computed(() => {
     const duration = Number(playerState.value.duration || currentMedia.value?.duration || 0);
@@ -459,6 +466,98 @@ function syncMediaSessionPosition() {
 
 function isPlayerEffectivelyPaused() {
     return Boolean(playerState.value.paused || playerState.value.buffering);
+}
+
+function getYouTubeSyncVideoId() {
+    return currentMedia.value?.videoId ?? currentMedia.value?.query?.v ?? playerState.value.videoId;
+}
+
+function resetYouTubeSyncPlayback(videoId) {
+    youtubeSyncVideoId = videoId ?? null;
+    hasSentYouTubeSyncStart = false;
+    hasSentYouTubeSyncEnded = false;
+    lastYouTubeSyncProgressAt = 0;
+    lastYouTubeSyncProgressTime = 0;
+    lastYouTubeSyncPaused = null;
+}
+
+function shouldSendYouTubeSyncWatchEvent() {
+    return isYouTubeSyncConnected() && /^[a-zA-Z0-9_-]{11}$/.test(getYouTubeSyncVideoId() ?? "");
+}
+
+async function sendYouTubeSyncWatchEvent(eventType, overrides = {}) {
+    if (!shouldSendYouTubeSyncWatchEvent()) return;
+
+    try {
+        await enqueueYouTubeSyncWatchEvent({
+            eventType,
+            videoId: getYouTubeSyncVideoId(),
+            currentTime: Number(overrides.currentTime ?? getLivePlayerPosition()),
+            duration: Number(overrides.duration ?? playerState.value.duration ?? currentMedia.value?.duration ?? 0),
+            playbackRate: Number(overrides.playbackRate ?? playerState.value.playbackRate ?? 1),
+            paused: Boolean(overrides.paused ?? playerState.value.paused),
+            buffering: Boolean(overrides.buffering ?? playerState.value.buffering),
+        });
+    } catch (error) {
+        console.error("Unable to relay remote YouTube watch feedback.", error);
+    }
+}
+
+function syncYouTubeWatchProgress() {
+    const videoId = getYouTubeSyncVideoId();
+    if (!shouldSendYouTubeSyncWatchEvent() || !videoId || isPlayerEffectivelyPaused()) return;
+
+    if (videoId !== youtubeSyncVideoId) {
+        resetYouTubeSyncPlayback(videoId);
+    }
+
+    const currentTime = getLivePlayerPosition();
+    const duration = Number(playerState.value.duration ?? currentMedia.value?.duration ?? 0);
+    const now = Date.now();
+
+    if (!hasSentYouTubeSyncStart) {
+        hasSentYouTubeSyncStart = true;
+        lastYouTubeSyncProgressAt = now;
+        lastYouTubeSyncProgressTime = currentTime;
+        void sendYouTubeSyncWatchEvent("start", { currentTime, duration, paused: false, buffering: false });
+        return;
+    }
+
+    if (duration > 0 && currentTime >= duration - 1 && !hasSentYouTubeSyncEnded) {
+        hasSentYouTubeSyncEnded = true;
+        void sendYouTubeSyncWatchEvent("ended", { currentTime: duration, duration, paused: true, buffering: false });
+        return;
+    }
+
+    if (
+        (now - lastYouTubeSyncProgressAt >= 15000 && Math.abs(currentTime - lastYouTubeSyncProgressTime) >= 5) ||
+        Math.abs(currentTime - lastYouTubeSyncProgressTime) >= 30
+    ) {
+        lastYouTubeSyncProgressAt = now;
+        lastYouTubeSyncProgressTime = currentTime;
+        void sendYouTubeSyncWatchEvent("progress", { currentTime, duration, paused: false, buffering: false });
+    }
+}
+
+function syncYouTubeWatchPlaybackState() {
+    const videoId = getYouTubeSyncVideoId();
+    if (!videoId) return;
+
+    if (videoId !== youtubeSyncVideoId) {
+        resetYouTubeSyncPlayback(videoId);
+    }
+
+    const paused = isPlayerEffectivelyPaused();
+    if (hasSentYouTubeSyncStart && lastYouTubeSyncPaused !== null && paused !== lastYouTubeSyncPaused) {
+        void sendYouTubeSyncWatchEvent(paused ? "pause" : "resume", {
+            currentTime: getLivePlayerPosition(),
+            paused,
+            buffering: Boolean(playerState.value.buffering),
+        });
+    }
+
+    lastYouTubeSyncPaused = paused;
+    syncYouTubeWatchProgress();
 }
 
 async function maybeStartLockScreenControls() {
@@ -534,6 +633,11 @@ function applyRemotePayload(payload) {
         duration: payload.duration ?? currentMedia.value?.duration ?? 0,
     };
 
+    const videoId = getYouTubeSyncVideoId();
+    if (videoId !== youtubeSyncVideoId) {
+        resetYouTubeSyncPlayback(videoId);
+    }
+
     syncMediaSessionPosition();
     void maybeStartLockScreenControls();
 }
@@ -551,6 +655,7 @@ function applyPlayerState(payload) {
         scrubberPosition.value = getLivePlayerPosition();
     }
 
+    syncYouTubeWatchPlaybackState();
     syncMediaSessionPosition();
     void maybeStartLockScreenControls();
 }
