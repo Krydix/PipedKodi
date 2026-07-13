@@ -99,13 +99,15 @@ The connector is separate from the normal Piped API flow. It is meant to hold a 
 Current status:
 
 -   `home` can fetch and normalize the authenticated YouTube home page using an imported cookie session.
--   playback feedback is relayed best-effort to YouTube, including direct playback plus remote web-player and Kodi sessions controlled from this app.
+-   playback feedback is relayed best-effort to YouTube, including direct playback and Kodi sessions controlled from this app.
 
 To run it locally:
 
 ```sh
 pnpm youtube-connector
 ```
+
+When using Kodi remote playback, run the relay with `YT_SYNC_BASE_URL` pointing at the connector (it defaults to `http://127.0.0.1:8091`). The relay reports start, progress, pause, resume, and completion events from Kodi's playback state.
 
 To run it with Docker Compose, start the optional `youtube-sync` service from `compose.ghcr.yml` and set `YT_SYNC_ENCRYPTION_KEY` in your `.env` file.
 

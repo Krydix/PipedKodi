@@ -16,6 +16,8 @@ const ytDlpTimeoutMs = Number(process.env.YT_DLP_TIMEOUT_MS ?? 30000);
 const kodiRequestTimeoutMs = Number(process.env.KODI_REQUEST_TIMEOUT_MS ?? 5000);
 const kodiPollIntervalMs = Number(process.env.KODI_POLL_INTERVAL_MS ?? 1000);
 const kodiBufferingGraceMs = Number(process.env.KODI_BUFFERING_GRACE_MS ?? 12000);
+const youtubeSyncBaseUrl = (process.env.YT_SYNC_BASE_URL ?? "http://127.0.0.1:8091").replace(/\/$/, "");
+const youtubeSyncRequestTimeoutMs = Number(process.env.YT_SYNC_REQUEST_TIMEOUT_MS ?? 5000);
 const emptyRoomRetentionMs = Number(process.env.REMOTE_EMPTY_ROOM_RETENTION_MS ?? 30000);
 const nativeBrowserDebugPort = Number(process.env.YOUTUBE_NATIVE_BROWSER_DEBUG_PORT ?? 9222);
 const nativeBrowserDebugUrl = `http://127.0.0.1:${nativeBrowserDebugPort}`;
@@ -619,6 +621,15 @@ function getOrCreateRoom(sessionId) {
                 pendingSeekTime: null,
                 sponsorSegments: [],
                 skippedSponsorSegments: new Set(),
+                youtubeSync: {
+                    videoId: null,
+                    started: false,
+                    ended: false,
+                    lastPaused: true,
+                    lastSentAt: 0,
+                    lastSentTime: 0,
+                    inactivePlayerPolls: 0,
+                },
                 volume: 50,
                 status: {
                     configured: false,
@@ -867,6 +878,134 @@ function stopKodiPolling(room) {
     room.kodi.pendingSeekTime = null;
 }
 
+function resetKodiYouTubeSyncTracking(room, videoId = null) {
+    room.kodi.youtubeSync = {
+        videoId,
+        started: false,
+        ended: false,
+        lastPaused: true,
+        lastSentAt: 0,
+        lastSentTime: 0,
+        inactivePlayerPolls: 0,
+    };
+}
+
+function sendKodiYouTubeSyncWatchEvent(
+    room,
+    eventType,
+    { currentTime, duration, paused, buffering, playbackRate },
+) {
+    const videoId = room.kodi.youtubeSync?.videoId ?? room.media?.videoId;
+    if (!youtubeSyncBaseUrl || !sanitizeVideoId(videoId)) return;
+
+    const controller =
+        typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(youtubeSyncRequestTimeoutMs) : undefined;
+    void fetch(`${youtubeSyncBaseUrl}/api/ytsync/watch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            eventType,
+            videoId,
+            currentTime: Math.max(0, Number(currentTime ?? 0)),
+            duration: Math.max(0, Number(duration ?? 0)),
+            paused: Boolean(paused),
+            buffering: Boolean(buffering),
+            playbackRate: Math.max(0, Number(playbackRate ?? 1)),
+        }),
+        signal: controller,
+    })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`YouTube sync connector responded with ${response.status}.`);
+            }
+        })
+        .catch(error => {
+            console.warn(
+                "Unable to relay Kodi watch feedback to YouTube.",
+                error instanceof Error ? error.message : error,
+            );
+        });
+}
+
+function maybeSendKodiYouTubeSyncWatchEvent(room, { currentTime, duration, speed, buffering, playerActive }) {
+    const tracking = room.kodi.youtubeSync;
+    if (!tracking?.videoId || tracking.videoId !== room.media?.videoId) return;
+
+    const now = Date.now();
+    const paused = buffering || speed === 0;
+    const playbackRate = speed > 0 ? speed : 1;
+
+    if (!playerActive) {
+        tracking.inactivePlayerPolls += 1;
+        if (tracking.started && !tracking.ended && tracking.inactivePlayerPolls >= 2) {
+            const completed = duration > 0 && currentTime >= Math.max(duration - 2, duration * 0.99);
+            tracking.lastPaused = true;
+            tracking.lastSentTime = currentTime;
+            tracking.ended = completed;
+            sendKodiYouTubeSyncWatchEvent(room, completed ? "ended" : "pause", {
+                currentTime,
+                duration,
+                paused: true,
+                buffering: false,
+                playbackRate,
+            });
+        }
+        return;
+    }
+
+    tracking.inactivePlayerPolls = 0;
+    if (buffering) return;
+
+    if (!tracking.started && speed > 0) {
+        tracking.started = true;
+        tracking.ended = false;
+        tracking.lastPaused = false;
+        tracking.lastSentAt = now;
+        tracking.lastSentTime = currentTime;
+        sendKodiYouTubeSyncWatchEvent(room, "start", {
+            currentTime,
+            duration,
+            paused: false,
+            buffering,
+            playbackRate,
+        });
+        return;
+    }
+
+    if (!tracking.started || tracking.ended) return;
+
+    if (paused !== tracking.lastPaused) {
+        tracking.lastPaused = paused;
+        tracking.lastSentAt = now;
+        tracking.lastSentTime = currentTime;
+        sendKodiYouTubeSyncWatchEvent(room, paused ? "pause" : "resume", {
+            currentTime,
+            duration,
+            paused,
+            buffering,
+            playbackRate,
+        });
+        return;
+    }
+
+    const timeSinceLastEvent = now - tracking.lastSentAt;
+    const progressSinceLastEvent = Math.abs(currentTime - tracking.lastSentTime);
+    if (
+        !paused &&
+        ((timeSinceLastEvent >= 15000 && progressSinceLastEvent >= 5) || progressSinceLastEvent >= 30)
+    ) {
+        tracking.lastSentAt = now;
+        tracking.lastSentTime = currentTime;
+        sendKodiYouTubeSyncWatchEvent(room, "progress", {
+            currentTime,
+            duration,
+            paused,
+            buffering,
+            playbackRate,
+        });
+    }
+}
+
 function maybeDisposeRoom(sessionId) {
     const room = rooms.get(sessionId);
     if (!room || room.clients.size > 0) {
@@ -952,6 +1091,13 @@ async function syncKodiRoomState(sessionId, room) {
 
         if (playerId === null) {
             if (room.playerState?.videoId) {
+                maybeSendKodiYouTubeSyncWatchEvent(room, {
+                    currentTime: Number(room.playerState.currentTime ?? 0),
+                    duration: Number(room.playerState.duration ?? room.media?.duration ?? 0),
+                    speed: 0,
+                    buffering: false,
+                    playerActive: false,
+                });
                 publishPlayerState(room, {
                     ...room.playerState,
                     paused: true,
@@ -1000,6 +1146,13 @@ async function syncKodiRoomState(sessionId, room) {
         }
 
         const buffering = room.kodi.awaitingPlaybackResume || room.kodi.bufferingUntil > now;
+        maybeSendKodiYouTubeSyncWatchEvent(room, {
+            currentTime,
+            duration,
+            speed,
+            buffering,
+            playerActive: true,
+        });
         if (volumeChanged) {
             broadcastSessionState(room);
         }
@@ -1047,6 +1200,7 @@ async function openKodiMedia(sessionId, room, media) {
     }
 
     try {
+        resetKodiYouTubeSyncTracking(room, media.videoId);
         const streamUrl = await resolveKodiStreamUrl(media.videoId);
         room.kodi.sponsorSegments = await fetchKodiSponsorSegments(media.videoId, room.sponsorSettings).catch(() => []);
         room.kodi.skippedSponsorSegments = new Set();
