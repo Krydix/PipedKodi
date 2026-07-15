@@ -157,6 +157,7 @@ function normalizeVideo(item) {
     if (!/^[\w-]{11}$/.test(id ?? "")) return null;
     return {
         id,
+        source: "youtube",
         title: String(item.title ?? "Untitled video"),
         channelName: String(item.channel ?? item.uploader ?? item.uploaderName ?? ""),
         channelId: item.channel_id ?? item.uploader_id ?? item.channelId ?? null,
@@ -351,6 +352,62 @@ async function channelCatalog(channelId) {
     };
 }
 
+function normalizePipedComment(comment) {
+    const text = String(comment?.commentText ?? comment?.text ?? "").trim();
+    if (!text) return null;
+    return {
+        id: String(comment.commentId ?? crypto.randomUUID()),
+        author: String(comment.author ?? comment.uploaderName ?? "YouTube user"),
+        text,
+        publishedText: String(comment.commentedTime ?? comment.publishedText ?? ""),
+        likeCount: String(comment.likeCount ?? ""),
+        avatar: normalizeThumbnail(comment.thumbnail ?? comment.uploaderAvatar),
+        replyCount: Number(comment.replyCount ?? comment.repliesPage?.comments?.length ?? 0) || 0,
+        repliesToken: comment.repliesPage?.nextpage ?? null,
+        replies: (comment.repliesPage?.comments ?? []).map(normalizePipedComment).filter(Boolean),
+    };
+}
+
+async function pipedWatchContext(videoId) {
+    const [streamsResponse, commentsResponse] = await Promise.all([
+        fetch(`${pipedApiBaseUrl}/streams/${videoId}`, { signal: AbortSignal.timeout(10_000) }),
+        fetch(`${pipedApiBaseUrl}/comments/${videoId}`, { signal: AbortSignal.timeout(10_000) }),
+    ]);
+    if (!streamsResponse.ok) throw new Error(`Fallback video service returned ${streamsResponse.status}.`);
+    const streams = await streamsResponse.json();
+    const commentsPayload = commentsResponse.ok ? await commentsResponse.json() : { comments: [] };
+    return {
+        source: "piped-fallback",
+        recommendations: (streams.relatedStreams ?? []).map(normalizeVideo).filter(Boolean),
+        comments: (commentsPayload.comments ?? []).map(normalizePipedComment).filter(Boolean),
+        nextPageToken: commentsPayload.nextpage ?? null,
+        commentsDisabled: commentsPayload.disabled === true,
+    };
+}
+
+async function watchContextContinuation(videoId, body) {
+    const continuation = String(body.continuation ?? "");
+    if (!continuation || continuation.length > 16_000) throw new Error("Invalid comments continuation.");
+    const account = await connectorRequest("/api/ytsync/session").catch(() => ({ connected: false }));
+    if (account.connected) return connectorRequest("/api/ytsync/watch-context/continuation", {
+        method: "POST", body: JSON.stringify({ videoId, continuation, replies: body.replies === true }),
+    });
+    const response = await fetch(`${pipedApiBaseUrl}/comments/${videoId}?nextpage=${encodeURIComponent(continuation)}`, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`Fallback comments service returned ${response.status}.`);
+    const payload = await response.json();
+    return { source: "piped-fallback", comments: (payload.comments ?? []).map(normalizePipedComment).filter(Boolean), nextPageToken: payload.nextpage ?? null };
+}
+
+async function watchContext(videoId) {
+    if (!/^[\w-]{11}$/.test(videoId ?? "")) throw new Error("Invalid video id.");
+    const account = await connectorRequest("/api/ytsync/session").catch(() => ({ connected: false }));
+    if (account.connected) {
+        const context = await connectorRequest(`/api/ytsync/watch-context?id=${encodeURIComponent(videoId)}`);
+        return { ...context, recommendations: (context.recommendations ?? []).map(normalizeConnectorVideo).filter(Boolean) };
+    }
+    return pipedWatchContext(videoId);
+}
+
 function sanitizeKodiConfig(input) {
     let url;
     try { url = new URL(String(input.address ?? "").trim()); }
@@ -376,6 +433,66 @@ async function kodiRpc(method, params, config = state.kodi) {
     const payload = await response.json();
     if (payload.error) throw new Error(payload.error.message ?? "Kodi rejected the command.");
     return payload.result;
+}
+
+const kodiArtworkProperties = ["title", "year", "genre", "plot", "runtime", "rating", "playcount", "resume", "art", "thumbnail", "premiered"];
+const kodiEpisodeProperties = ["title", "plot", "runtime", "rating", "playcount", "resume", "art", "thumbnail", "season", "episode", "showtitle", "firstaired"];
+const kodiTVShowProperties = ["title", "year", "genre", "plot", "rating", "playcount", "art", "thumbnail", "premiered", "episode", "watchedepisodes"];
+
+function kodiImageUrl(value) {
+    if (!value) return "";
+    return `/api/kodi/image?url=${encodeURIComponent(value)}`;
+}
+
+function normalizeKodiItem(item, type) {
+    const idKey = type === "movies" ? "movieid" : type === "tvshows" ? "tvshowid" : "episodeid";
+    return {
+        ...item,
+        id: item[idKey],
+        type,
+        poster: kodiImageUrl(item.art?.poster || item.thumbnail),
+        fanart: kodiImageUrl(item.art?.fanart),
+        watched: Number(item.playcount) > 0,
+        progress: item.resume?.total ? item.resume.position / item.resume.total : 0,
+    };
+}
+
+async function kodiLibrary(type) {
+    if (type === "movies") {
+        const result = await kodiRpc("VideoLibrary.GetMovies", { properties: kodiArtworkProperties, sort: { method: "title", order: "ascending" } });
+        return { items: (result.movies || []).map(item => normalizeKodiItem(item, type)) };
+    }
+    if (type === "tvshows") {
+        const result = await kodiRpc("VideoLibrary.GetTVShows", { properties: kodiTVShowProperties, sort: { method: "title", order: "ascending" } });
+        return { items: (result.tvshows || []).map(item => normalizeKodiItem(item, type)) };
+    }
+    throw new Error("Unknown Kodi library type.");
+}
+
+async function kodiDetails(type, id) {
+    const numericId = Number(id);
+    if (type === "movies") {
+        const result = await kodiRpc("VideoLibrary.GetMovieDetails", { movieid: numericId, properties: [...kodiArtworkProperties, "director", "cast", "studio", "tagline"] });
+        return normalizeKodiItem(result.moviedetails, type);
+    }
+    if (type === "tvshows") {
+        const show = await kodiRpc("VideoLibrary.GetTVShowDetails", { tvshowid: numericId, properties: [...kodiTVShowProperties, "studio"] });
+        const episodes = await kodiRpc("VideoLibrary.GetEpisodes", { tvshowid: numericId, properties: kodiEpisodeProperties, sort: { method: "episode", order: "ascending" } });
+        return { ...normalizeKodiItem(show.tvshowdetails, type), episodes: (episodes.episodes || []).map(item => normalizeKodiItem(item, "episodes")) };
+    }
+    throw new Error("Unknown Kodi library type.");
+}
+
+async function serveKodiImage(response, source) {
+    if (!source) return sendJson(response, 404, { error: "Artwork not found." });
+    const kodiUrl = new URL(state.kodi.address);
+    const artworkUrl = new URL(`/image/${encodeURIComponent(source)}`, kodiUrl).toString();
+    const headers = {};
+    if (state.kodi.username || state.kodi.password) headers.Authorization = `Basic ${Buffer.from(`${state.kodi.username}:${state.kodi.password}`).toString("base64")}`;
+    const artwork = await fetch(artworkUrl, { headers, signal: AbortSignal.timeout(kodiTimeout) });
+    if (!artwork.ok) throw new Error(`Kodi artwork returned HTTP ${artwork.status}.`);
+    response.writeHead(200, { "Content-Type": artwork.headers.get("content-type") || "image/jpeg", "Cache-Control": "private, max-age=86400" });
+    response.end(Buffer.from(await artwork.arrayBuffer()));
 }
 
 function runDiscoveryCommand(command, args, duration = 1_800) {
@@ -526,6 +643,7 @@ function sendYouTubeWatchEvent(eventType, playback = state.playback) {
 }
 
 function syncYouTubeTracking({ playerActive }) {
+    if (state.nowPlaying?.source !== "youtube") return;
     const videoId = state.nowPlaying?.id;
     if (!videoId) return;
     if (youtubeTracking.videoId !== videoId) {
@@ -599,13 +717,34 @@ async function pollKodi() {
             }
             hadActivePlayer = false;
             syncYouTubeTracking({ playerActive: false });
+            if (state.nowPlaying?.source === "kodi") { state.nowPlaying = null; state.sponsorSegments = []; broadcast("state"); }
         } else {
             hadActivePlayer = true;
-            const props = await kodiRpc("Player.GetProperties", { playerid, properties: ["time", "totaltime", "speed"] });
+            const [props, playing] = await Promise.all([
+                kodiRpc("Player.GetProperties", { playerid, properties: ["time", "totaltime", "speed"] }),
+                kodiRpc("Player.GetItem", { playerid, properties: ["title", "showtitle", "season", "episode", "thumbnail", "art", "file"] }),
+            ]);
+            const item = playing?.item;
+            const nativeKodiItem = item && ["movie", "episode", "musicvideo"].includes(item.type);
+            let mediaChanged = false;
+            if (nativeKodiItem) {
+                const nextIdentity = `${item.type}:${item.id}`;
+                if (state.nowPlaying?.identity !== nextIdentity) mediaChanged = true;
+                state.nowPlaying = {
+                    id: item.id, identity: nextIdentity, source: "kodi", mediaType: item.type,
+                    title: item.title || item.label || "Now playing",
+                    channelName: item.type === "episode" ? `${item.showtitle || "TV Show"}${item.season != null && item.episode != null ? ` · S${item.season} E${item.episode}` : ""}` : "Kodi library",
+                    thumbnail: kodiImageUrl(item.art?.fanart || item.art?.["tvshow.fanart"] || item.art?.landscape || item.thumbnail || item.art?.poster),
+                    poster: kodiImageUrl(item.art?.poster || item.art?.["tvshow.poster"] || item.thumbnail),
+                    libraryId: item.id,
+                };
+                if (mediaChanged) { state.sponsorSegments = []; skippedSponsorSegments = new Set(); }
+            }
             const seconds = value => Number(value?.hours ?? 0) * 3600 + Number(value?.minutes ?? 0) * 60 + Number(value?.seconds ?? 0) + Number(value?.milliseconds ?? 0) / 1000;
             const currentTime = await maybeSkipSponsorSegment(playerid, seconds(props.time));
             state.playback = { ...state.playback, paused: props.speed === 0, buffering: false, currentTime, duration: seconds(props.totaltime) || state.playback.duration, volume: app.volume ?? state.playback.volume, error: null };
             syncYouTubeTracking({ playerActive: true });
+            if (mediaChanged) broadcast("state");
         }
         broadcast("playback", state.playback);
     } catch (error) {
@@ -724,6 +863,11 @@ const server = http.createServer(async (request, response) => {
         if (url.pathname === "/api/catalog/home") return sendJson(response, 200, await homeCatalog(url.searchParams.get("continuation") ?? ""));
         if (url.pathname === "/api/catalog/search") return sendJson(response, 200, { items: await searchCatalog(url.searchParams.get("q")) });
         if (url.pathname.startsWith("/api/catalog/channel/")) return sendJson(response, 200, await channelCatalog(decodeURIComponent(url.pathname.split("/").at(-1))));
+        if (url.pathname.startsWith("/api/catalog/watch/")) {
+            const videoId = decodeURIComponent(url.pathname.split("/")[4]);
+            if (url.pathname.endsWith("/continuation") && request.method === "POST") return sendJson(response, 200, await watchContextContinuation(videoId, await readJson(request)));
+            if (request.method === "GET") return sendJson(response, 200, await watchContext(videoId));
+        }
         if (url.pathname === "/api/queue" && request.method === "GET") return sendJson(response, 200, snapshot());
         if (url.pathname === "/api/queue" && request.method === "POST") {
             const video = normalizeVideo(await readJson(request)); if (!video) throw new Error("Invalid video.");
@@ -739,6 +883,27 @@ const server = http.createServer(async (request, response) => {
         if (url.pathname === "/api/playback/silent.wav" && ["GET", "HEAD"].includes(request.method)) return serveSilentAudio(request, response, url);
         if (url.pathname === "/api/playback/play" && request.method === "POST") return sendJson(response, 200, await playVideo(await readJson(request)));
         if (url.pathname === "/api/playback/control" && request.method === "POST") { await controlPlayback(await readJson(request)); return sendJson(response, 200, { ok: true }); }
+        if (url.pathname === "/api/kodi/image" && request.method === "GET") return serveKodiImage(response, url.searchParams.get("url"));
+        const libraryMatch = url.pathname.match(/^\/api\/kodi\/library\/(movies|tvshows)(?:\/(\d+))?$/);
+        if (libraryMatch && request.method === "GET") return sendJson(response, 200, libraryMatch[2] ? await kodiDetails(libraryMatch[1], libraryMatch[2]) : await kodiLibrary(libraryMatch[1]));
+        if (url.pathname === "/api/kodi/play" && request.method === "POST") {
+            const body = await readJson(request); const key = body.type === "movies" ? "movieid" : "episodeid";
+            await kodiRpc("Player.Open", { item: { [key]: Number(body.id) }, ...(body.resume ? { options: { resume: true } } : {}) });
+            ensurePolling();
+            return sendJson(response, 200, { ok: true });
+        }
+        if (url.pathname === "/api/kodi/watched" && request.method === "POST") {
+            const body = await readJson(request); const method = body.type === "movies" ? "VideoLibrary.SetMovieDetails" : "VideoLibrary.SetEpisodeDetails"; const key = body.type === "movies" ? "movieid" : "episodeid";
+            await kodiRpc(method, { [key]: Number(body.id), playcount: body.watched ? 1 : 0 }); return sendJson(response, 200, { ok: true });
+        }
+        if (url.pathname === "/api/kodi/input" && request.method === "POST") {
+            const body = await readJson(request); const methods = { up: "Input.Up", down: "Input.Down", left: "Input.Left", right: "Input.Right", select: "Input.Select", back: "Input.Back", home: "Input.Home", info: "Input.Info", osd: "Input.ShowOSD", context: "Input.ContextMenu" };
+            if (body.action === "text") await kodiRpc("Input.SendText", { text: String(body.value || ""), done: true });
+            else if (body.action === "stop") { const playerid = await activePlayerId(); if (playerid !== null) await kodiRpc("Player.Stop", { playerid }); }
+            else if (body.action === "next" || body.action === "previous") { const playerid = await activePlayerId(); if (playerid !== null) await kodiRpc("Player.GoTo", { playerid, to: body.action }); }
+            else { const method = methods[body.action]; if (!method) throw new Error("Unknown remote command."); await kodiRpc(method); }
+            return sendJson(response, 200, { ok: true });
+        }
         if (url.pathname === "/api/settings/kodi" && request.method === "PUT") { state.kodi = sanitizeKodiConfig(await readJson(request)); await persist(); broadcast("state"); return sendJson(response, 200, { kodi: publicKodi() }); }
         if (url.pathname === "/api/settings/kodi/test" && request.method === "POST") { const config = sanitizeKodiConfig(await readJson(request)); await kodiRpc("JSONRPC.Ping", undefined, config); return sendJson(response, 200, { ok: true }); }
         if (url.pathname === "/api/devices/discover" && request.method === "GET") return sendJson(response, 200, { devices: await discoverKodiDevices() });
@@ -769,4 +934,5 @@ process.once("SIGTERM", shutdown);
 await restore();
 await persist();
 await ensureConnector();
+ensurePolling();
 server.listen(port, host, () => console.log(`PipedKodi product listening on http://${host}:${port}`));

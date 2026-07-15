@@ -558,6 +558,179 @@ function findContinuationToken(contents) {
     return null;
 }
 
+function collectRenderers(value, rendererName, results = []) {
+    if (!value || typeof value !== "object") return results;
+    if (value[rendererName]) results.push(value[rendererName]);
+    for (const child of Object.values(value)) collectRenderers(child, rendererName, results);
+    return results;
+}
+
+function findCommentsContinuation(value) {
+    if (!value || typeof value !== "object") return null;
+    const identifiesComments = value.targetId === "comments-section" || value.sectionIdentifier === "comment-item-section";
+    if (identifiesComments) {
+        const token = collectRenderers(value, "continuationItemRenderer")
+            .map(renderer => renderer.continuationEndpoint?.continuationCommand?.token)
+            .find(Boolean);
+        if (token) return token;
+    }
+    for (const child of Object.values(value)) {
+        const token = findCommentsContinuation(child);
+        if (token) return token;
+    }
+    return null;
+}
+
+function findMainCommentsContinuation(value) {
+    if (!value || typeof value !== "object") return null;
+    for (const [key, child] of Object.entries(value)) {
+        if (key === "commentRepliesRenderer") continue;
+        if (key === "continuationItemRenderer") {
+            const token = child?.continuationEndpoint?.continuationCommand?.token;
+            if (token) return token;
+        }
+        const token = findMainCommentsContinuation(child);
+        if (token) return token;
+    }
+    return null;
+}
+
+function findAnyContinuation(value) {
+    if (!value || typeof value !== "object") return null;
+    if (typeof value.continuationCommand?.token === "string") return value.continuationCommand.token;
+    for (const child of Object.values(value)) {
+        const token = findAnyContinuation(child);
+        if (token) return token;
+    }
+    return null;
+}
+
+function extractReplyContinuations(payload) {
+    const result = new Map();
+    for (const thread of collectRenderers(payload, "commentThreadRenderer")) {
+        const commentId = thread.commentViewModel?.commentViewModel?.commentId ?? thread.comment?.commentRenderer?.commentId;
+        const replies = thread.replies?.commentRepliesRenderer;
+        const token = replies ? collectRenderers(replies, "continuationItemRenderer")
+            .map(renderer => renderer.continuationEndpoint?.continuationCommand?.token).find(Boolean) : null;
+        if (commentId && token) result.set(commentId, token);
+    }
+    return result;
+}
+
+function normalizeWatchRecommendation(renderer) {
+    const videoId = extractVideoId(renderer.navigationEndpoint);
+    if (!videoId) return null;
+    return {
+        type: "stream",
+        url: `/watch?v=${videoId}`,
+        title: extractRendererRunsText(renderer.title),
+        thumbnail: pickThumbnail(renderer.thumbnail?.thumbnails),
+        uploaderName: extractRendererRunsText(renderer.shortBylineText ?? renderer.longBylineText),
+        uploaderUrl: renderer.shortBylineText?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId
+            ? `/channel/${renderer.shortBylineText.runs[0].navigationEndpoint.browseEndpoint.browseId}`
+            : "",
+        uploadedDate: extractRendererRunsText(renderer.publishedTimeText),
+        duration: parseDurationSeconds(extractRendererRunsText(renderer.lengthText)),
+        views: parseViewCount(extractRendererRunsText(renderer.viewCountText)),
+        source: "youtube-sync",
+    };
+}
+
+function normalizeYouTubeComment(thread) {
+    const renderer = thread.comment?.commentRenderer ?? thread.commentViewModel?.commentViewModel;
+    if (!renderer) return null;
+    const properties = renderer.commentViewModel?.commentViewModel ?? renderer;
+    const author = properties.authorText ?? properties.author?.displayName;
+    const content = properties.contentText ?? properties.commentText;
+    const published = properties.publishedTimeText ?? properties.publishedTime;
+    return {
+        id: properties.commentId ?? properties.commentKey ?? crypto.randomUUID(),
+        author: extractRendererRunsText(author) || String(author ?? "YouTube user"),
+        text: extractRendererRunsText(content) || String(content ?? ""),
+        publishedText: extractRendererRunsText(published) || String(published ?? ""),
+        likeCount: extractRendererRunsText(properties.voteCount) || String(properties.likeCount ?? ""),
+        avatar: pickThumbnail(properties.authorThumbnail?.thumbnails ?? properties.author?.avatar?.image?.sources),
+        replyCount: Number(properties.replyCount ?? thread.replies?.commentRepliesRenderer?.viewReplies?.buttonRenderer?.text?.simpleText?.match(/\d+/)?.[0] ?? 0),
+    };
+}
+
+function normalizeYouTubeCommentEntity(mutation, replyContinuations = new Map()) {
+    const entity = mutation?.payload?.commentEntityPayload;
+    const properties = entity?.properties;
+    if (!properties?.content?.content) return null;
+    return {
+        id: properties.commentId ?? entity.key ?? crypto.randomUUID(),
+        author: entity.author?.displayName ?? "YouTube user",
+        text: properties.content.content,
+        publishedText: properties.publishedTime ?? "",
+        likeCount: entity.toolbar?.likeCountNotliked ?? entity.toolbar?.likeCountLiked ?? "",
+        avatar: entity.author?.avatarThumbnailUrl ?? pickThumbnail(entity.avatar?.image?.sources),
+        replyCount: Number(entity.toolbar?.replyCount ?? 0) || 0,
+        repliesToken: replyContinuations.get(properties.commentId) ?? null,
+    };
+}
+
+async function requestYouTubeContinuation(videoId, continuation, config) {
+    if (typeof continuation !== "string" || !continuation || continuation.length > 16_000) throw new Error("Invalid YouTube continuation.");
+    const response = await fetch(`https://www.youtube.com/youtubei/v1/next?key=${encodeURIComponent(config.apiKey)}`, {
+        method: "POST",
+        headers: getYouTubeHeaders(connectorState.session.cookieHeader, {
+            "Content-Type": "application/json",
+            "X-YouTube-Client-Name": "1",
+            "X-YouTube-Client-Version": config.clientVersion,
+            Referer: `${youtubeWatchUrl}?v=${videoId}`,
+        }),
+        body: JSON.stringify({ context: { client: { clientName: "WEB", clientVersion: config.clientVersion, hl: "en", gl: "US" } }, continuation }),
+    });
+    if (!response.ok) throw new Error(`YouTube comments request failed with ${response.status}.`);
+    return response.json();
+}
+
+function normalizeYouTubeCommentsPayload(payload, replies = false) {
+    const replyContinuations = extractReplyContinuations(payload);
+    const entityComments = (payload.frameworkUpdates?.entityBatchUpdate?.mutations ?? [])
+        .map(mutation => normalizeYouTubeCommentEntity(mutation, replyContinuations));
+    const comments = [...entityComments, ...collectRenderers(payload, "commentThreadRenderer").map(normalizeYouTubeComment)]
+        .filter(comment => comment?.text)
+        .filter((comment, index, all) => all.findIndex(entry => entry.id === comment.id) === index);
+    return { comments, nextPageToken: replies ? findAnyContinuation(payload) : findMainCommentsContinuation(payload) };
+}
+
+async function fetchYouTubeCommentsContinuation(videoId, continuation, replies = false) {
+    if (!/^[\w-]{11}$/.test(videoId ?? "")) throw new Error("A valid YouTube video id is required.");
+    if (!connectorState.session?.cookieHeader) throw new Error("No YouTube session connected.");
+    const watchUrl = new URL(youtubeWatchUrl); watchUrl.searchParams.set("v", videoId);
+    const html = await fetchYouTubePage(watchUrl, connectorState.session.cookieHeader);
+    const payload = await requestYouTubeContinuation(videoId, continuation, extractInnertubeConfig(html));
+    return { source: "youtube-auth", ...normalizeYouTubeCommentsPayload(payload, replies) };
+}
+
+async function fetchYouTubeWatchContext(videoId) {
+    if (!/^[\w-]{11}$/.test(videoId ?? "")) throw new Error("A valid YouTube video id is required.");
+    if (!connectorState.session?.cookieHeader) throw new Error("No YouTube session connected.");
+    const watchUrl = new URL(youtubeWatchUrl);
+    watchUrl.searchParams.set("v", videoId);
+    const html = await fetchYouTubePage(watchUrl, connectorState.session.cookieHeader);
+    const initialData = extractInitialData(html);
+    const config = extractInnertubeConfig(html);
+    let commentPayload = initialData;
+    const continuation = findCommentsContinuation(initialData);
+    if (continuation && collectRenderers(initialData, "commentThreadRenderer").length === 0) {
+        commentPayload = await requestYouTubeContinuation(videoId, continuation, config);
+    }
+    const recommendationRenderers = [
+        ...collectRenderers(initialData, "compactVideoRenderer"),
+        ...collectRenderers(initialData, "videoRenderer"),
+    ];
+    const recommendations = [
+        ...recommendationRenderers.map(normalizeWatchRecommendation),
+        ...collectRenderers(initialData, "lockupViewModel").map(normalizeLockupHomeItem),
+    ].filter(Boolean)
+        .filter((item, index, all) => item.url !== `/watch?v=${videoId}` && all.findIndex(entry => entry.url === item.url) === index);
+    const normalizedComments = normalizeYouTubeCommentsPayload(commentPayload);
+    return { source: "youtube-auth", recommendations, ...normalizedComments, commentsDisabled: !continuation && normalizedComments.comments.length === 0 };
+}
+
 function extractInnertubeConfig(html) {
     const read = key => html.match(new RegExp(`"${key}":"([^"]+)"`))?.[1];
     const apiKey = read("INNERTUBE_API_KEY");
@@ -1037,6 +1210,17 @@ const server = http.createServer(async (request, response) => {
         if (requestUrl.pathname === "/api/ytsync/home" && request.method === "GET") {
             const home = await fetchYouTubeHome(undefined, requestUrl.searchParams.get("continuation") ?? "");
             sendJson(response, 200, home);
+            return;
+        }
+
+        if (requestUrl.pathname === "/api/ytsync/watch-context" && request.method === "GET") {
+            sendJson(response, 200, await fetchYouTubeWatchContext(requestUrl.searchParams.get("id")));
+            return;
+        }
+
+        if (requestUrl.pathname === "/api/ytsync/watch-context/continuation" && request.method === "POST") {
+            const body = await readJsonBody(request);
+            sendJson(response, 200, await fetchYouTubeCommentsContinuation(body.videoId, body.continuation, body.replies === true));
             return;
         }
 

@@ -2,12 +2,13 @@
     <div class="app-shell">
         <header class="topbar">
             <button class="brand" @click="navigate('home')">
-                <span class="brand-mark">▶</span><span>PipedKodi</span>
+                <span class="brand-mark" :class="{ kodi: mode === 'kodi' }"><UiIcon :name="mode === 'kodi' ? 'tv' : 'play'" /></span><span>PipedKodi</span>
             </button>
             <div class="status-cluster">
                 <span class="status-dot" :class="status?.kodiConnected ? 'online' : ''" />
                 <span>{{ status?.kodiConnected ? "Kodi connected" : "Kodi offline" }}</span>
             </div>
+            <button v-if="mode === 'kodi'" class="header-settings" :class="{ active: view === 'settings' }" aria-label="Kodi settings" @click="navigate('settings')"><UiIcon name="settings" /></button>
         </header>
 
         <main>
@@ -40,9 +41,11 @@
                 <MediaGrid :items="channel.items" :loading="loading" @play="play" @queue="enqueue" @channel="openChannel" />
             </section>
 
-            <section v-else-if="view === 'queue'" class="page narrow-page">
+            <section v-else-if="view === 'queue'" class="page watch-page">
                 <div class="page-heading"><div><p class="eyebrow">Living room</p><h1>Now playing</h1></div></div>
-                <article v-if="state.nowPlaying" class="now-playing">
+                <div v-if="activeSource === 'kodi'" class="mode-handoff"><UiIcon name="tv" /><span><strong>Kodi library playback</strong><small>Open the Kodi remote for navigation and library controls.</small></span><button class="button secondary" @click="setMode('kodi'); navigate('remote')">Open Kodi remote</button></div>
+                <div v-if="state.nowPlaying" class="watch-layout">
+                <article class="now-playing">
                     <img :src="state.nowPlaying.thumbnail" alt="" />
                     <div class="now-info"><h2>{{ state.nowPlaying.title }}</h2><p>{{ state.nowPlaying.channelName }}</p></div>
                     <input
@@ -67,6 +70,19 @@
                     <label class="volume"><span>Volume</span><input v-model.number="volumePosition" type="range" min="0" max="100" @input="updateVolume" @change="finishVolume" /></label>
                     <p v-if="state.playback.error" class="error-text">{{ state.playback.error }}</p>
                 </article>
+                <aside v-if="activeSource === 'youtube'" class="recommendations-panel">
+                    <div class="context-heading"><div><p class="eyebrow">Keep watching</p><h2>Recommended</h2></div><span v-if="watchContext.source" class="source-badge">{{ watchContext.source === 'youtube-auth' ? 'Personalized' : 'Public' }}</span></div>
+                    <div v-if="contextLoading" class="context-loading"><span /><span /><span /></div>
+                    <div v-else-if="watchContext.recommendations.length" class="recommendation-list">
+                        <article v-for="item in watchContext.recommendations.slice(0, 12)" :key="item.id">
+                            <button class="recommendation-main" @click="play(item)"><img :src="item.thumbnail" alt="" loading="lazy" /><span><strong>{{ item.title }}</strong><small>{{ item.channelName }}</small></span></button>
+                            <button class="recommendation-queue" :aria-label="`Add ${item.title} to queue`" @click="enqueue(item)">＋</button>
+                        </article>
+                    </div>
+                    <div v-else-if="contextError" class="context-empty"><p>{{ contextError }}</p><button class="text-button" @click="loadWatchContext(true)">Try again</button></div>
+                    <p v-else class="muted">No recommendations available.</p>
+                </aside>
+                </div>
                 <div v-else class="empty-state"><span>▰</span><h2>Nothing playing</h2><p>Choose a video from Home or Search.</p></div>
 
                 <div class="section-heading"><h2>Up next</h2><span>{{ state.queue.length }}</span></div>
@@ -77,9 +93,51 @@
                     </article>
                 </div>
                 <p v-else class="muted">Your queue is empty.</p>
+
+                <section v-if="state.nowPlaying && activeSource === 'youtube'" class="comments-section">
+                    <div class="section-heading"><h2>Comments</h2><span v-if="watchContext.comments.length">{{ watchContext.comments.length }}</span></div>
+                    <div v-if="contextLoading" class="comment-skeleton"><div v-for="i in 3" :key="i" /></div>
+                    <div v-else-if="watchContext.comments.length" class="comment-list">
+                        <article v-for="comment in watchContext.comments" :key="comment.id" class="comment-thread">
+                            <img v-if="comment.avatar" :src="comment.avatar" alt="" loading="lazy" /><span v-else class="comment-avatar">{{ comment.author.slice(0, 1).toUpperCase() }}</span>
+                            <div><div class="comment-meta"><strong>{{ comment.author }}</strong><small>{{ comment.publishedText }}</small></div><p>{{ comment.text }}</p><div class="comment-stats"><span v-if="comment.likeCount">♡ {{ comment.likeCount }}</span><button v-if="comment.replyCount || comment.repliesToken || comment.replies.length" class="reply-toggle" :disabled="comment.repliesLoading" @click="toggleReplies(comment)">{{ comment.repliesLoading ? 'Loading replies…' : (comment.expanded ? 'Hide replies' : `${comment.replyCount || comment.replies.length} replies`) }}</button></div>
+                                <div v-if="comment.expanded" class="reply-list">
+                                    <article v-for="reply in comment.replies" :key="reply.id"><img v-if="reply.avatar" :src="reply.avatar" alt="" loading="lazy" /><span v-else class="comment-avatar">{{ reply.author.slice(0, 1).toUpperCase() }}</span><div><div class="comment-meta"><strong>{{ reply.author }}</strong><small>{{ reply.publishedText }}</small></div><p>{{ reply.text }}</p><span v-if="reply.likeCount" class="reply-likes">♡ {{ reply.likeCount }}</span></div></article>
+                                    <button v-if="comment.repliesToken" class="load-more-comments" :disabled="comment.repliesLoading" @click="loadReplies(comment)">{{ comment.repliesLoading ? 'Loading…' : (comment.replies.length ? 'Show more replies' : 'Show replies') }}</button>
+                                    <p v-else-if="!comment.replies.length" class="muted">No replies available.</p>
+                                </div>
+                            </div>
+                        </article>
+                        <button v-if="watchContext.nextPageToken" class="load-more-comments" :disabled="commentsLoadingMore" @click="loadMoreComments">{{ commentsLoadingMore ? 'Loading more comments…' : 'Show more comments' }}</button>
+                    </div>
+                    <div v-else class="context-empty"><p>{{ watchContext.commentsDisabled ? 'Comments are unavailable for this video.' : (contextError || 'No comments yet.') }}</p><button v-if="contextError" class="text-button" @click="loadWatchContext(true)">Try again</button></div>
+                </section>
             </section>
 
-            <section v-else class="page narrow-page">
+            <section v-else-if="view === 'kodi-library'" class="page">
+                <div class="page-heading library-heading"><div><p class="eyebrow">Your Kodi library</p><h1>{{ libraryType === 'movies' ? 'Movies' : 'TV Shows' }} <small>{{ filteredLibrary.length }}</small></h1></div><div class="library-tools"><input v-model="libraryQuery" :placeholder="`Search ${libraryType === 'movies' ? 'movies' : 'shows'}`" /><select v-model="libraryFilter"><option value="all">All</option><option value="unwatched">Unwatched</option><option value="watched">Watched</option></select><button class="button secondary" @click="loadKodiLibrary(true)">Refresh</button></div></div>
+                <div v-if="libraryLoading" class="poster-grid"><div v-for="i in 12" :key="i" class="poster-card skeleton"><div class="poster-placeholder" /></div></div>
+                <div v-else-if="libraryError" class="empty-state"><h2>Couldn’t load the library</h2><p>{{ libraryError }}</p><button class="button primary" @click="loadKodiLibrary(true)">Try again</button></div>
+                <div v-else class="poster-grid"><button v-for="item in filteredLibrary" :key="item.id" class="poster-card" @click="openKodiItem(item)"><span class="poster-art"><img v-if="item.poster" :src="item.poster" alt="" loading="lazy" /><span v-else>▰</span><i v-if="item.watched">✓</i><b v-if="item.progress" :style="{ width: item.progress * 100 + '%' }" /></span><strong>{{ item.title }}</strong><small>{{ item.year || (item.episode ? `${item.episode} episodes` : '') }}</small></button></div>
+            </section>
+
+            <section v-else-if="view === 'kodi-detail'" class="detail-page">
+                <button class="text-button detail-back" @click="navigate('kodi-library')">← Back to {{ libraryType === 'movies' ? 'movies' : 'TV shows' }}</button>
+                <div v-if="detailLoading" class="page"><p class="muted">Loading details…</p></div>
+                <template v-else-if="selectedItem"><div class="detail-hero" :style="selectedItem.fanart ? { backgroundImage: `linear-gradient(to top, #0b0d10 2%, #0b0d1088 70%, #0b0d1044), url(${selectedItem.fanart})` } : {}"><div class="detail-content"><img v-if="selectedItem.poster" :src="selectedItem.poster" alt="" /><div><p class="eyebrow">{{ libraryType === 'movies' ? 'Movie' : 'TV Show' }}</p><h1>{{ selectedItem.title }}</h1><p class="detail-meta">{{ [selectedItem.year, selectedItem.runtime ? formatRuntime(selectedItem.runtime) : '', selectedItem.rating ? `★ ${Number(selectedItem.rating).toFixed(1)}` : ''].filter(Boolean).join(' · ') }}</p><p class="genre-list">{{ selectedItem.genre?.join(' · ') }}</p><p class="detail-plot">{{ selectedItem.plot || 'No description available.' }}</p><div class="button-row detail-actions"><button v-if="libraryType === 'movies'" class="button primary" @click="playKodiItem(selectedItem, selectedItem.progress > 0)">{{ selectedItem.progress ? 'Resume' : 'Play' }}</button><button class="button secondary" @click="toggleWatched(selectedItem)">{{ selectedItem.watched ? 'Mark unwatched' : 'Mark watched' }}</button></div></div></div></div>
+                    <div v-if="selectedItem.episodes" class="page episode-section"><h2>Episodes</h2><div class="season-list"><section v-for="season in groupedSeasons" :key="season.number" class="season-section"><button class="season-header" :aria-expanded="expandedSeasons.has(season.number)" @click="toggleSeason(season.number)"><span><strong>{{ season.number === 0 ? 'Specials' : `Season ${season.number}` }}</strong><small>{{ season.watchedCount }} of {{ season.episodes.length }} watched</small></span><span class="season-progress"><i :style="{ width: season.progress + '%' }" /></span><b>{{ expandedSeasons.has(season.number) ? '−' : '+' }}</b></button><div v-if="expandedSeasons.has(season.number)" class="episode-list"><article v-for="episode in season.episodes" :key="episode.id"><button class="episode-main" @click="playKodiItem(episode, episode.progress > 0)"><span class="episode-number">E{{ episode.episode }}</span><span><strong>{{ episode.title }}</strong><small>{{ episode.runtime ? formatRuntime(episode.runtime) : '' }}</small></span><span>▶</span></button><button class="watch-button" :aria-label="episode.watched ? 'Mark unwatched' : 'Mark watched'" @click="toggleWatched(episode)">{{ episode.watched ? '✓' : '○' }}</button></article></div></section></div></div>
+                </template>
+            </section>
+
+            <section v-else-if="view === 'remote'" class="page remote-page">
+                <div class="page-heading"><div><p class="eyebrow">Kodi</p><h1>Remote</h1></div></div>
+                <div v-if="activeSource === 'youtube'" class="mode-handoff"><UiIcon name="play" /><span><strong>YouTube playback</strong><small>Recommendations, queue and comments are available in YouTube mode.</small></span><button class="button secondary" @click="setMode('youtube'); navigate('queue')">Open YouTube view</button></div>
+                <article v-if="state.nowPlaying" class="now-playing remote-player" :class="{ 'library-media': activeSource === 'kodi' }"><div class="remote-artwork"><img :src="state.nowPlaying.poster || state.nowPlaying.thumbnail" alt="" /></div><div class="now-info"><p class="eyebrow">{{ activeSource === 'kodi' ? (state.nowPlaying.mediaType === 'episode' ? 'Now playing episode' : 'Now playing movie') : 'Playing from YouTube' }}</p><h2>{{ state.nowPlaying.title }}</h2><p>{{ state.nowPlaying.channelName }}</p></div><input v-model.number="scrubberPosition" class="progress scrubber" type="range" min="0" :max="state.playback.duration || 0" step="1" aria-label="Playback position" :disabled="!state.playback.duration" :style="{ '--progress': progress + '%', '--segments': segmentGradient }" @input="scrubbing = true" @change="commitScrub" /><div class="time-row"><span>{{ formatTime(scrubberPosition) }}</span><span>{{ formatTime(state.playback.duration) }}</span></div></article>
+                <div v-else class="empty-state remote-empty"><UiIcon name="tv" /><h2>Nothing playing</h2><p>Your remote is ready.</p></div>
+                <div class="remote-console"><div class="dpad"><button aria-label="Up" @click="remote('up')"><UiIcon name="chevron-up" /></button><button aria-label="Left" @click="remote('left')"><UiIcon name="chevron-left" /></button><button class="dpad-ok" aria-label="Select" @click="remote('select')"><span>OK</span></button><button aria-label="Right" @click="remote('right')"><UiIcon name="chevron-right" /></button><button aria-label="Down" @click="remote('down')"><UiIcon name="chevron-down" /></button></div><div class="transport remote-transport"><button class="icon-button" aria-label="Previous" @click="remote('previous')"><UiIcon name="previous" /></button><button class="icon-button" aria-label="Back ten seconds" @click="control({ action: 'seekBy', seconds: -10 })"><UiIcon name="rewind" /><small>10</small></button><button class="play-button" :aria-label="state.playback.paused ? 'Play' : 'Pause'" @click="control({ action: 'playpause' })"><UiIcon :name="state.playback.paused ? 'play' : 'pause'" /></button><button class="icon-button" aria-label="Forward ten seconds" @click="control({ action: 'seekBy', seconds: 10 })"><UiIcon name="forward" /><small>10</small></button><button class="icon-button" aria-label="Next" @click="remote('next')"><UiIcon name="next" /></button></div><div class="quick-actions"><button @click="remote('home')"><UiIcon name="home" /><small>Home</small></button><button @click="remote('back')"><UiIcon name="back" /><small>Back</small></button><button @click="remote('info')"><UiIcon name="info" /><small>Info</small></button><button @click="remote('osd')"><UiIcon name="osd" /><small>OSD</small></button><button @click="sendText"><UiIcon name="keyboard" /><small>Text</small></button></div><label class="volume remote-volume"><UiIcon name="volume" /><input v-model.number="volumePosition" type="range" min="0" max="100" aria-label="Volume" @input="updateVolume" @change="finishVolume" /></label></div>
+            </section>
+
+            <section v-else-if="view === 'settings'" class="page narrow-page">
                 <div class="page-heading"><div><p class="eyebrow">Setup</p><h1>Settings</h1></div></div>
                 <div class="settings-card">
                     <div class="settings-title"><div><h2>Kodi</h2><p>Playback and controls stay on your home network.</p></div><span class="badge" :class="status?.kodiConnected ? 'good' : ''">{{ status?.kodiConnected ? "Connected" : "Not connected" }}</span></div>
@@ -117,11 +175,18 @@
 
         <div v-if="toast" class="toast" :class="toast.error ? 'toast-error' : ''">{{ toast.message }}</div>
 
-        <nav class="bottom-nav" aria-label="Main navigation">
+        <nav v-if="mode === 'youtube'" class="bottom-nav" aria-label="YouTube navigation">
             <button :class="{ active: view === 'home' || view === 'channel' }" @click="navigate('home')"><span>⌂</span>Home</button>
             <button :class="{ active: view === 'search' }" @click="navigate('search')"><span>⌕</span>Search</button>
             <button :class="{ active: view === 'queue' }" @click="navigate('queue')"><span>▷</span>Queue<i v-if="state.queue.length">{{ state.queue.length }}</i></button>
-            <button :class="{ active: view === 'settings' }" @click="navigate('settings')"><span>⚙</span>Settings</button>
+            <button @click="setMode('kodi')"><span>▰</span>Kodi</button>
+        </nav>
+        <nav v-else class="bottom-nav" aria-label="Kodi navigation">
+            <button :class="{ active: view === 'kodi-library' && libraryType === 'movies' }" @click="openLibrary('movies')"><span>▰</span>Movies</button>
+            <button :class="{ active: view === 'kodi-library' && libraryType === 'tvshows' }" @click="openLibrary('tvshows')"><span>▣</span>TV Shows</button>
+            <button :class="{ active: view === 'remote' }" @click="navigate('remote')"><span>⌾</span>Remote</button>
+            <button v-if="canNavigateBackInKodi" aria-label="Back in Kodi" @click="navigateBackInKodi"><span>←</span>Back</button>
+            <button v-else @click="setMode('youtube')"><span>▶</span>YouTube</button>
         </nav>
     </div>
 </template>
@@ -130,6 +195,23 @@
 import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { api } from "./api.js";
 import { createNowPlayingSession } from "./nowPlayingSession.js";
+
+const iconPaths = {
+    tv: "M4 7.5h16v11H4z M9 4l3 3.5L15 4",
+    play: "M9 6l8 6-8 6z", pause: "M9 7v10 M15 7v10",
+    settings: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z M12 3v2 M12 19v2 M3 12h2 M19 12h2 M5.6 5.6 7 7 M17 17l1.4 1.4 M18.4 5.6 17 7 M7 17l-1.4 1.4",
+    "chevron-up": "M6 15l6-6 6 6", "chevron-down": "M6 9l6 6 6-6", "chevron-left": "M15 6l-6 6 6 6", "chevron-right": "M9 6l6 6-6 6",
+    previous: "M7 6v12 M18 7l-8 5 8 5z", next: "M17 6v12 M6 7l8 5-8 5z",
+    rewind: "M11 8l-6 4 6 4z M19 8l-6 4 6 4z", forward: "M13 8l6 4-6 4z M5 8l6 4-6 4z",
+    home: "M4 11l8-7 8 7v9h-6v-6h-4v6H4z", back: "M9 7l-5 5 5 5 M5 12h9a5 5 0 0 1 5 5",
+    info: "M12 11v6 M12 7.5v.1 M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z",
+    osd: "M4 5h16v14H4z M7 9h10 M7 13h6 M7 16h4", keyboard: "M3 7h18v11H3z M6 10h.1 M9 10h.1 M12 10h.1 M15 10h.1 M18 10h.1 M7 14h10",
+    volume: "M4 10v4h4l5 4V6L8 10z M16 9a4 4 0 0 1 0 6 M18 6a8 8 0 0 1 0 12",
+};
+const UiIcon = defineComponent({
+    props: { name: { type: String, required: true } },
+    setup(props) { return () => h("svg", { class: "ui-icon", viewBox: "0 0 24 24", "aria-hidden": "true" }, [h("path", { d: iconPaths[props.name] || iconPaths.info })]); },
+});
 
 const MediaGrid = defineComponent({
     props: { items: { type: Array, default: () => [] }, loading: Boolean },
@@ -145,14 +227,24 @@ const MediaGrid = defineComponent({
 });
 
 const view = ref("home"); const previousView = ref("home"); const query = ref(loadLastSearch()); const searchInput = ref(null);
+const mode = ref(localStorage.getItem("piped-kodi:mode") || "youtube");
+const libraryType = ref("movies"); const libraryItems = ref([]); const libraryQuery = ref(""); const libraryFilter = ref("all"); const libraryLoading = ref(false); const libraryError = ref("");
+const selectedItem = ref(null); const detailLoading = ref(false);
+const expandedSeasons = ref(new Set());
+const kodiNavigationHistory = ref([]);
 const loading = ref(true); const loadingMore = ref(false); const searching = ref(false); const home = ref({ personalized: false, items: [], nextPageToken: null }); const homeSentinel = ref(null); const searchResults = ref([]); const channel = ref({ items: [] });
 const status = ref(null); const state = ref({ queue: [], nowPlaying: null, sponsorSegments: [], playback: { paused: true, currentTime: 0, duration: 0, volume: 50 } });
 const scrubberPosition = ref(0); const scrubbing = ref(false); const volumePosition = ref(50); const adjustingVolume = ref(false);
 const kodiForm = ref({ address: "", username: "", password: "" }); const settingsMessage = ref(""); const settingsError = ref(false); const saving = ref(false); const toast = ref(null);
 const discovering = ref(false); const discoveryComplete = ref(false); const discoveredDevices = ref([]);
 const browserAuth = ref({ supported: true, ready: false }); const browserChecked = ref(false); const accountBusy = ref(false); const accountMessage = ref(""); const accountError = ref(false);
+const watchContext = ref({ source: "", recommendations: [], comments: [], commentsDisabled: false }); const contextLoading = ref(false); const contextError = ref("");
+const commentsLoadingMore = ref(false);
+let contextRequest = 0;
 let toastTimer; let socket; let nowPlayingSession; let homeObserver; let pendingVolume = null; let volumeRequest = null; let volumeInteraction = 0;
 const progress = computed(() => state.value.playback.duration ? Math.min(100, scrubberPosition.value / state.value.playback.duration * 100) : 0);
+const activeSource = computed(() => !state.value.nowPlaying ? null : state.value.nowPlaying.source || (/^[\w-]{11}$/.test(String(state.value.nowPlaying.id || "")) ? "youtube" : "kodi"));
+const canNavigateBackInKodi = computed(() => kodiNavigationHistory.value.length > 0);
 const segmentGradient = computed(() => {
     const duration = Number(state.value.playback.duration) || 0;
     if (!duration || !state.value.sponsorSegments?.length) return "linear-gradient(transparent, transparent)";
@@ -163,8 +255,29 @@ const segmentGradient = computed(() => {
     });
     return `linear-gradient(to right, ${stops.join(", ")})`;
 });
+const filteredLibrary = computed(() => {
+    const term = libraryQuery.value.trim().toLowerCase();
+    return libraryItems.value.filter(item => {
+        if (libraryFilter.value === "watched" && !item.watched) return false;
+        if (libraryFilter.value === "unwatched" && item.watched) return false;
+        return !term || [item.title, ...(item.genre || [])].join(" ").toLowerCase().includes(term);
+    });
+});
+const groupedSeasons = computed(() => {
+    const groups = new Map();
+    for (const episode of selectedItem.value?.episodes || []) {
+        const number = Number(episode.season) || 0;
+        if (!groups.has(number)) groups.set(number, []);
+        groups.get(number).push(episode);
+    }
+    return [...groups.entries()].sort(([a], [b]) => a - b).map(([number, episodes]) => {
+        const watchedCount = episodes.filter(episode => episode.watched).length;
+        return { number, episodes, watchedCount, progress: episodes.length ? watchedCount / episodes.length * 100 : 0 };
+    });
+});
 
 function formatTime(value) { const total = Math.max(0, Math.floor(Number(value) || 0)); const hours = Math.floor(total / 3600); const minutes = Math.floor(total % 3600 / 60); const seconds = total % 60; return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}` : `${minutes}:${String(seconds).padStart(2, "0")}`; }
+function formatRuntime(seconds) { const minutes = Math.round((Number(seconds) || 0) / 60); return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`; }
 function loadLastSearch() { try { return sessionStorage.getItem("piped-kodi:last-search") ?? ""; } catch { return ""; } }
 function saveLastSearch(value) { try { sessionStorage.setItem("piped-kodi:last-search", value); } catch { /* Storage may be unavailable in private browsing. */ } }
 function showToast(message, error = false) { toast.value = { message, error }; clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.value = null, 3200); }
@@ -172,6 +285,31 @@ function applyState(value) { state.value = { ...state.value, ...value, playback:
 async function refreshStatus() { status.value = await api.status(); applyState(status.value); kodiForm.value = { address: status.value.kodi.address, username: status.value.kodi.username, password: "" }; }
 async function loadHome() { loading.value = true; try { home.value = await api.home(); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
 async function loadMoreHome() { if (view.value !== "home" || loading.value || loadingMore.value || !home.value.nextPageToken) return; loadingMore.value = true; try { const page = await api.home(home.value.nextPageToken); const knownIds = new Set(home.value.items.map(item => item.id)); home.value = { ...home.value, nextPageToken: page.nextPageToken, items: [...home.value.items, ...page.items.filter(item => !knownIds.has(item.id))] }; } catch (error) { showToast(error.message, true); } finally { loadingMore.value = false; } }
+async function loadWatchContext(force = false) {
+    const videoId = state.value.nowPlaying?.id;
+    if (!videoId || (!force && watchContext.value.videoId === videoId)) return;
+    const requestId = ++contextRequest; contextLoading.value = true; contextError.value = "";
+    watchContext.value = { videoId, source: "", recommendations: [], comments: [], commentsDisabled: false };
+    try { const result = await api.watchContext(videoId); if (requestId === contextRequest) watchContext.value = { videoId, ...result, comments: (result.comments ?? []).map(prepareComment) }; }
+    catch (error) { if (requestId === contextRequest) contextError.value = error.message; }
+    finally { if (requestId === contextRequest) contextLoading.value = false; }
+}
+function prepareComment(comment) { return { ...comment, expanded: false, repliesLoading: false, replies: (comment.replies ?? []).map(reply => ({ ...reply })) }; }
+async function loadMoreComments() {
+    const token = watchContext.value.nextPageToken; const videoId = state.value.nowPlaying?.id;
+    if (!token || !videoId || commentsLoadingMore.value) return;
+    commentsLoadingMore.value = true;
+    try { const page = await api.watchContextContinuation(videoId, token); const known = new Set(watchContext.value.comments.map(comment => comment.id)); watchContext.value.comments.push(...(page.comments ?? []).filter(comment => !known.has(comment.id)).map(prepareComment)); watchContext.value.nextPageToken = page.nextPageToken ?? null; }
+    catch (error) { showToast(error.message, true); } finally { commentsLoadingMore.value = false; }
+}
+async function toggleReplies(comment) { comment.expanded = !comment.expanded; if (comment.expanded && !comment.replies.length && comment.repliesToken) await loadReplies(comment); }
+async function loadReplies(comment) {
+    const videoId = state.value.nowPlaying?.id;
+    if (!videoId || !comment.repliesToken || comment.repliesLoading) return;
+    comment.repliesLoading = true;
+    try { const page = await api.watchContextContinuation(videoId, comment.repliesToken, true); const known = new Set(comment.replies.map(reply => reply.id)); comment.replies.push(...(page.comments ?? []).filter(reply => !known.has(reply.id))); comment.repliesToken = page.nextPageToken ?? null; }
+    catch (error) { showToast(error.message, true); } finally { comment.repliesLoading = false; }
+}
 async function runSearch() { searchInput.value?.blur(); const searchQuery = query.value.trim(); if (!searchQuery) return; saveLastSearch(searchQuery); searching.value = true; try { searchResults.value = (await api.search(searchQuery)).items; } catch (error) { showToast(error.message, true); } finally { searching.value = false; } }
 async function play(item) { try { showToast(`Sending “${item.title}” to Kodi`); applyState(await api.play(item)); navigate("queue"); } catch (error) { showToast(error.message, true); } }
 async function enqueue(item) { try { applyState(await api.enqueue(item)); showToast("Added to queue"); } catch (error) { showToast(error.message, true); } }
@@ -220,7 +358,22 @@ async function finishVolume() {
     if (interaction === volumeInteraction) adjustingVolume.value = false;
 }
 async function openChannel(item) { if (!item.channelId) return; previousView.value = view.value; view.value = "channel"; loading.value = true; channel.value = { title: item.channelName, items: [] }; try { channel.value = await api.channel(item.channelId); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
-function navigate(next) { const focusSearch = next === "search" && view.value === "search"; view.value = next; if (focusSearch) nextTick(() => searchInput.value?.focus()); if (next === "settings") void refreshBrowserAuth(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+function navigate(next) { const focusSearch = next === "search" && view.value === "search"; if (mode.value === "kodi") { if (["kodi-library", "remote"].includes(next)) kodiNavigationHistory.value = []; else if (next === "settings" && view.value !== next) kodiNavigationHistory.value = [...kodiNavigationHistory.value, view.value]; } view.value = next; if (focusSearch) nextTick(() => searchInput.value?.focus()); if (next === "settings") void refreshBrowserAuth(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+function navigateBackInKodi() { const history = [...kodiNavigationHistory.value]; const previous = history.pop(); if (!previous) return; kodiNavigationHistory.value = history; view.value = previous; window.scrollTo({ top: 0, behavior: "smooth" }); }
+function setMode(next) { mode.value = next; localStorage.setItem("piped-kodi:mode", next); if (next === "youtube") navigate("home"); else openLibrary(libraryType.value); }
+async function openLibrary(type) { libraryType.value = type; navigate("kodi-library"); await loadKodiLibrary(); }
+async function loadKodiLibrary(force = false) { if (!force && libraryItems.value.length && libraryItems.value[0]?.type === libraryType.value) return; libraryLoading.value = true; libraryError.value = ""; try { libraryItems.value = (await api.kodiLibrary(libraryType.value)).items; } catch (error) { libraryError.value = error.message; } finally { libraryLoading.value = false; } }
+function inferredCurrentSeason(seasons) {
+    const regular = seasons.filter(season => season.number > 0);
+    const candidates = regular.filter((season, index) => season.watchedCount > 0 && season.watchedCount < season.episodes.length && regular.slice(0, index).every(previous => previous.watchedCount === previous.episodes.length));
+    return candidates.length === 1 ? candidates[0].number : null;
+}
+function toggleSeason(number) { const next = new Set(expandedSeasons.value); if (next.has(number)) next.delete(number); else next.add(number); expandedSeasons.value = next; }
+async function openKodiItem(item) { kodiNavigationHistory.value = [...kodiNavigationHistory.value, view.value]; view.value = "kodi-detail"; detailLoading.value = true; selectedItem.value = null; expandedSeasons.value = new Set(); window.scrollTo({ top: 0 }); try { selectedItem.value = await api.kodiDetails(libraryType.value, item.id); await nextTick(); const current = inferredCurrentSeason(groupedSeasons.value); expandedSeasons.value = current === null ? new Set() : new Set([current]); } catch (error) { showToast(error.message, true); navigate("kodi-library"); } finally { detailLoading.value = false; } }
+async function playKodiItem(item, resume = false) { try { await api.kodiPlay(item.type, item.id, resume); showToast(resume ? "Resuming on Kodi" : "Playing on Kodi"); navigate("remote"); } catch (error) { showToast(error.message, true); } }
+async function toggleWatched(item) { try { await api.kodiWatched(item.type, item.id, !item.watched); item.watched = !item.watched; const cached = libraryItems.value.find(entry => entry.id === item.id); if (cached) cached.watched = item.watched; } catch (error) { showToast(error.message, true); } }
+async function remote(action, value) { try { await api.kodiInput(action, value); } catch (error) { showToast(error.message, true); } }
+function sendText() { const value = window.prompt("Send text to Kodi"); if (value) void remote("text", value); }
 async function testKodi() { saving.value = true; settingsMessage.value = ""; try { await api.testKodi(kodiForm.value); settingsError.value = false; settingsMessage.value = "Kodi responded successfully."; } catch (error) { settingsError.value = true; settingsMessage.value = error.message; } finally { saving.value = false; } }
 async function saveKodi() { saving.value = true; settingsMessage.value = ""; try { await api.saveKodi(kodiForm.value); settingsError.value = false; settingsMessage.value = "Kodi settings saved locally."; await refreshStatus(); } catch (error) { settingsError.value = true; settingsMessage.value = error.message; } finally { saving.value = false; } }
 async function discoverKodi() { discovering.value = true; discoveryComplete.value = false; settingsMessage.value = ""; try { discoveredDevices.value = (await api.discoverKodi()).devices; discoveryComplete.value = true; if (discoveredDevices.value.length === 1) selectKodi(discoveredDevices.value[0]); } catch (error) { settingsError.value = true; settingsMessage.value = error.message; } finally { discovering.value = false; } }
@@ -233,6 +386,7 @@ async function disconnectAccount() { accountBusy.value = true; accountMessage.va
 function connectEvents() { const protocol = location.protocol === "https:" ? "wss:" : "ws:"; socket = new WebSocket(`${protocol}//${location.host}/api/events`); socket.onmessage = event => { const message = JSON.parse(event.data); if (message.type === "playback") applyState({ playback: message.payload }); else applyState(message.payload); }; socket.onclose = () => setTimeout(connectEvents, 1500); }
 
 watch(homeSentinel, element => { homeObserver?.disconnect(); if (element) { homeObserver = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) void loadMoreHome(); }, { rootMargin: "600px 0px" }); homeObserver.observe(element); } });
-onMounted(async () => { nowPlayingSession = createNowPlayingSession({ getMedia: () => ({ ...state.value.nowPlaying, ...state.value.playback }), control }); try { await Promise.all([refreshStatus(), loadHome(), refreshBrowserAuth()]); connectEvents(); } catch (error) { showToast(error.message, true); } });
+watch(() => state.value.nowPlaying?.id, () => void loadWatchContext());
+onMounted(async () => { nowPlayingSession = createNowPlayingSession({ getMedia: () => ({ ...state.value.nowPlaying, ...state.value.playback }), control }); try { await Promise.all([refreshStatus(), loadHome(), refreshBrowserAuth()]); connectEvents(); if (mode.value === "kodi") await openLibrary(libraryType.value); } catch (error) { showToast(error.message, true); } });
 onUnmounted(() => { socket?.close(); homeObserver?.disconnect(); nowPlayingSession?.destroy(); clearTimeout(toastTimer); });
 </script>
