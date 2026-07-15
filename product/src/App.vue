@@ -64,7 +64,7 @@
                         <button class="play-button" :aria-label="state.playback.paused ? 'Play' : 'Pause'" @click="control({ action: 'playpause' })">{{ state.playback.paused ? "▶" : "Ⅱ" }}</button>
                         <button class="icon-button" aria-label="Forward ten seconds" @click="control({ action: 'seekBy', seconds: 10 })">+10</button>
                     </div>
-                    <label class="volume"><span>Volume</span><input type="range" min="0" max="100" :value="state.playback.volume" @change="control({ action: 'volume', volume: Number($event.target.value) })" /></label>
+                    <label class="volume"><span>Volume</span><input v-model.number="volumePosition" type="range" min="0" max="100" @input="adjustingVolume = true" @change="commitVolume" /></label>
                     <p v-if="state.playback.error" class="error-text">{{ state.playback.error }}</p>
                 </article>
                 <div v-else class="empty-state"><span>▰</span><h2>Nothing playing</h2><p>Choose a video from Home or Search.</p></div>
@@ -147,7 +147,7 @@ const MediaGrid = defineComponent({
 const view = ref("home"); const previousView = ref("home"); const query = ref(loadLastSearch()); const searchInput = ref(null);
 const loading = ref(true); const loadingMore = ref(false); const searching = ref(false); const home = ref({ personalized: false, items: [], nextPageToken: null }); const homeSentinel = ref(null); const searchResults = ref([]); const channel = ref({ items: [] });
 const status = ref(null); const state = ref({ queue: [], nowPlaying: null, sponsorSegments: [], playback: { paused: true, currentTime: 0, duration: 0, volume: 50 } });
-const scrubberPosition = ref(0); const scrubbing = ref(false);
+const scrubberPosition = ref(0); const scrubbing = ref(false); const volumePosition = ref(50); const adjustingVolume = ref(false);
 const kodiForm = ref({ address: "", username: "", password: "" }); const settingsMessage = ref(""); const settingsError = ref(false); const saving = ref(false); const toast = ref(null);
 const discovering = ref(false); const discoveryComplete = ref(false); const discoveredDevices = ref([]);
 const browserAuth = ref({ supported: true, ready: false }); const browserChecked = ref(false); const accountBusy = ref(false); const accountMessage = ref(""); const accountError = ref(false);
@@ -168,7 +168,7 @@ function formatTime(value) { const total = Math.max(0, Math.floor(Number(value) 
 function loadLastSearch() { try { return sessionStorage.getItem("piped-kodi:last-search") ?? ""; } catch { return ""; } }
 function saveLastSearch(value) { try { sessionStorage.setItem("piped-kodi:last-search", value); } catch { /* Storage may be unavailable in private browsing. */ } }
 function showToast(message, error = false) { toast.value = { message, error }; clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.value = null, 3200); }
-function applyState(value) { state.value = { ...state.value, ...value, playback: { ...state.value.playback, ...(value.playback ?? {}) } }; if (!scrubbing.value) scrubberPosition.value = state.value.playback.currentTime || 0; nowPlayingSession?.sync(); }
+function applyState(value) { state.value = { ...state.value, ...value, playback: { ...state.value.playback, ...(value.playback ?? {}) } }; if (!scrubbing.value) scrubberPosition.value = state.value.playback.currentTime || 0; if (!adjustingVolume.value) volumePosition.value = state.value.playback.volume ?? 50; nowPlayingSession?.sync(); }
 async function refreshStatus() { status.value = await api.status(); applyState(status.value); kodiForm.value = { address: status.value.kodi.address, username: status.value.kodi.username, password: "" }; }
 async function loadHome() { loading.value = true; try { home.value = await api.home(); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
 async function loadMoreHome() { if (view.value !== "home" || loading.value || loadingMore.value || !home.value.nextPageToken) return; loadingMore.value = true; try { const page = await api.home(home.value.nextPageToken); const knownIds = new Set(home.value.items.map(item => item.id)); home.value = { ...home.value, nextPageToken: page.nextPageToken, items: [...home.value.items, ...page.items.filter(item => !knownIds.has(item.id))] }; } catch (error) { showToast(error.message, true); } finally { loadingMore.value = false; } }
@@ -186,6 +186,13 @@ async function commitScrub() {
     nowPlayingSession?.sync();
     await control({ action: "seek", seconds });
     scrubbing.value = false;
+}
+async function commitVolume() {
+    const volume = Math.min(Math.max(Math.round(Number(volumePosition.value) || 0), 0), 100);
+    volumePosition.value = volume;
+    state.value.playback.volume = volume;
+    await control({ action: "volume", volume });
+    adjustingVolume.value = false;
 }
 async function openChannel(item) { if (!item.channelId) return; previousView.value = view.value; view.value = "channel"; loading.value = true; channel.value = { title: item.channelName, items: [] }; try { channel.value = await api.channel(item.channelId); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
 function navigate(next) { const focusSearch = next === "search" && view.value === "search"; view.value = next; if (focusSearch) nextTick(() => searchInput.value?.focus()); if (next === "settings") void refreshBrowserAuth(); window.scrollTo({ top: 0, behavior: "smooth" }); }
