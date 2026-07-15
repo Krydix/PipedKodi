@@ -15,12 +15,13 @@
             <section v-if="view === 'home'" class="page">
                 <div class="page-heading">
                     <div><p class="eyebrow">Browse</p><h1>{{ home.personalized ? "For you" : "Discover" }}</h1></div>
-                    <button class="button secondary" @click="loadHome">Refresh</button>
+                    <div class="heading-actions"><button class="view-toggle" :aria-label="richView ? 'Use compact video cards' : 'Use rich video cards'" :aria-pressed="richView" @click="toggleRichView"><span>{{ richView ? '▦' : '▤' }}</span>{{ richView ? 'Compact' : 'Rich view' }}</button><button class="button secondary" @click="loadHome">Refresh</button></div>
                 </div>
                 <p v-if="!home.personalized && !loading" class="notice">Connect a YouTube session for your personalized Home feed. Browsing and playback work without it.</p>
-                <MediaGrid :items="home.items" :loading="loading" @play="play" @queue="enqueue" @channel="openChannel" />
-                <div v-if="home.nextPageToken" ref="homeSentinel" class="feed-sentinel" aria-hidden="true">
+                <MediaGrid :items="home.items" :loading="loading" :rich="richView" @play="play" @queue="enqueue" @download="downloadVideo" @channel="openChannel" />
+                <div v-if="home.nextPageToken" ref="homeSentinel" class="feed-sentinel">
                     <span v-if="loadingMore">Loading more recommendations…</span>
+                    <button v-else class="button secondary" @click="loadMoreHome">Load more recommendations</button>
                 </div>
             </section>
 
@@ -32,13 +33,13 @@
                         <button class="button primary" :disabled="searching">{{ searching ? "Searching…" : "Search" }}</button>
                     </form>
                 </div>
-                <MediaGrid :items="searchResults" :loading="searching" @play="play" @queue="enqueue" @channel="openChannel" />
+                <MediaGrid :items="searchResults" :loading="searching" :rich="richView" @play="play" @queue="enqueue" @download="downloadVideo" @channel="openChannel" />
             </section>
 
             <section v-else-if="view === 'channel'" class="page">
                 <button class="text-button" @click="navigate(previousView)">← Back</button>
                 <div class="page-heading"><div><p class="eyebrow">Channel</p><h1>{{ channel.title }}</h1><p class="muted clamp">{{ channel.description }}</p></div></div>
-                <MediaGrid :items="channel.items" :loading="loading" @play="play" @queue="enqueue" @channel="openChannel" />
+                <MediaGrid :items="channel.items" :loading="loading" :rich="richView" @play="play" @queue="enqueue" @download="downloadVideo" @channel="openChannel" />
             </section>
 
             <section v-else-if="view === 'queue'" class="page watch-page">
@@ -214,20 +215,26 @@ const UiIcon = defineComponent({
 });
 
 const MediaGrid = defineComponent({
-    props: { items: { type: Array, default: () => [] }, loading: Boolean },
-    emits: ["play", "queue", "channel"],
+    props: { items: { type: Array, default: () => [] }, loading: Boolean, rich: Boolean },
+    emits: ["play", "queue", "download", "channel"],
     setup(props, { emit }) {
-        return () => h("div", { class: "media-grid" }, props.loading && !props.items.length
+        const openMenu = ref(null);
+        const closeMenus = () => openMenu.value = null;
+        onMounted(() => document.addEventListener("click", closeMenus));
+        onUnmounted(() => document.removeEventListener("click", closeMenus));
+        const action = (event, name, item) => { event.stopPropagation(); openMenu.value = null; emit(name, item); };
+        return () => h("div", { class: ["media-grid", { "rich-grid": props.rich }] }, props.loading && !props.items.length
             ? Array.from({ length: 8 }, (_, i) => h("div", { class: "media-card skeleton", key: i }, [h("div", { class: "thumb" }), h("div", { class: "line" }), h("div", { class: "line short" })]))
             : props.items.map(item => h("article", { class: "media-card", key: item.id }, [
                 h("button", { class: "thumbnail-button", onClick: () => emit("play", item), "aria-label": `Play ${item.title}` }, [h("img", { src: item.thumbnail, alt: "", loading: "lazy" }), h("span", { class: "play-overlay" }, "▶"), item.duration ? h("small", formatTime(item.duration)) : null]),
-                h("div", { class: "media-copy" }, [h("div", { class: "media-details" }, [h("h3", item.title), h("button", { class: "channel-link", disabled: !item.channelId, onClick: () => emit("channel", item) }, item.channelName || "YouTube")]), h("button", { class: "add-button", onClick: () => emit("queue", item) }, "+ Queue")]),
+                h("div", { class: "media-copy" }, [h("div", { class: "media-details" }, [h("h3", item.title), h("button", { class: "channel-link", disabled: !item.channelId, onClick: () => emit("channel", item) }, item.channelName || "YouTube"), props.rich ? h("p", { class: "video-meta" }, formatVideoMeta(item)) : null]), h("div", { class: "card-menu" }, [h("button", { class: "menu-trigger", "aria-label": `More actions for ${item.title}`, "aria-expanded": openMenu.value === item.id, onClick: event => { event.stopPropagation(); openMenu.value = openMenu.value === item.id ? null : item.id; } }, "⋮"), openMenu.value === item.id ? h("div", { class: "action-menu", onClick: event => event.stopPropagation() }, [h("button", { onClick: event => action(event, "queue", item) }, "＋ Add to queue"), h("button", { onClick: event => action(event, "download", item) }, "↓ Download to phone")]) : null])]),
             ])));
     },
 });
 
 const view = ref("home"); const previousView = ref("home"); const query = ref(loadLastSearch()); const searchInput = ref(null);
 const mode = ref(localStorage.getItem("piped-kodi:mode") || "youtube");
+const richView = ref(localStorage.getItem("piped-kodi:youtube-view") === "rich");
 const libraryType = ref("movies"); const libraryItems = ref([]); const libraryQuery = ref(""); const libraryFilter = ref("all"); const libraryLoading = ref(false); const libraryError = ref("");
 const selectedItem = ref(null); const detailLoading = ref(false);
 const expandedSeasons = ref(new Set());
@@ -278,13 +285,17 @@ const groupedSeasons = computed(() => {
 
 function formatTime(value) { const total = Math.max(0, Math.floor(Number(value) || 0)); const hours = Math.floor(total / 3600); const minutes = Math.floor(total % 3600 / 60); const seconds = total % 60; return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}` : `${minutes}:${String(seconds).padStart(2, "0")}`; }
 function formatRuntime(seconds) { const minutes = Math.round((Number(seconds) || 0) / 60); return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`; }
+function formatVideoMeta(item) { const parts = []; if (item.viewCount) parts.push(`${new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(item.viewCount)} views`); if (item.publishedText) parts.push(formatPublished(item.publishedText)); return parts.join(" · "); }
+function formatPublished(value) { const text = String(value); if (!/^\d{8}$/.test(text)) return text; const date = new Date(`${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T00:00:00`); const days = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000)); if (days < 1) return "Today"; if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`; const months = Math.floor(days / 30); if (months < 12) return `${months} month${months === 1 ? "" : "s"} ago`; const years = Math.floor(months / 12); return `${years} year${years === 1 ? "" : "s"} ago`; }
+function toggleRichView() { richView.value = !richView.value; localStorage.setItem("piped-kodi:youtube-view", richView.value ? "rich" : "compact"); }
+function downloadVideo(item) { showToast(`Preparing “${item.title}” for download`); const link = document.createElement("a"); link.href = api.downloadUrl(item); link.download = ""; document.body.appendChild(link); link.click(); link.remove(); }
 function loadLastSearch() { try { return sessionStorage.getItem("piped-kodi:last-search") ?? ""; } catch { return ""; } }
 function saveLastSearch(value) { try { sessionStorage.setItem("piped-kodi:last-search", value); } catch { /* Storage may be unavailable in private browsing. */ } }
 function showToast(message, error = false) { toast.value = { message, error }; clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.value = null, 3200); }
 function applyState(value) { state.value = { ...state.value, ...value, playback: { ...state.value.playback, ...(value.playback ?? {}) } }; if (!scrubbing.value) scrubberPosition.value = state.value.playback.currentTime || 0; if (!adjustingVolume.value) volumePosition.value = state.value.playback.volume ?? 50; nowPlayingSession?.sync(); }
 async function refreshStatus() { status.value = await api.status(); applyState(status.value); kodiForm.value = { address: status.value.kodi.address, username: status.value.kodi.username, password: "" }; }
 async function loadHome() { loading.value = true; try { home.value = await api.home(); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
-async function loadMoreHome() { if (view.value !== "home" || loading.value || loadingMore.value || !home.value.nextPageToken) return; loadingMore.value = true; try { const page = await api.home(home.value.nextPageToken); const knownIds = new Set(home.value.items.map(item => item.id)); home.value = { ...home.value, nextPageToken: page.nextPageToken, items: [...home.value.items, ...page.items.filter(item => !knownIds.has(item.id))] }; } catch (error) { showToast(error.message, true); } finally { loadingMore.value = false; } }
+async function loadMoreHome() { if (view.value !== "home" || loading.value || loadingMore.value || !home.value.nextPageToken) return; let pageLoaded = false; loadingMore.value = true; try { const page = await api.home(home.value.nextPageToken); const knownIds = new Set(home.value.items.map(item => item.id)); home.value = { ...home.value, nextPageToken: page.nextPageToken, items: [...home.value.items, ...page.items.filter(item => !knownIds.has(item.id))] }; pageLoaded = true; } catch (error) { showToast(error.message, true); } finally { loadingMore.value = false; if (pageLoaded) { await nextTick(); observeHomeSentinel(homeSentinel.value); } } }
 async function loadWatchContext(force = false) {
     const videoId = state.value.nowPlaying?.id;
     if (!videoId || (!force && watchContext.value.videoId === videoId)) return;
@@ -385,7 +396,14 @@ async function stopAccountBrowser() { accountBusy.value = true; try { await api.
 async function disconnectAccount() { accountBusy.value = true; accountMessage.value = ""; try { await api.disconnectYouTube(); accountError.value = false; accountMessage.value = "YouTube disconnected and the imported session was removed."; await Promise.all([refreshStatus(), loadHome(), refreshBrowserAuth()]); } catch (error) { accountError.value = true; accountMessage.value = error.message; } finally { accountBusy.value = false; } }
 function connectEvents() { const protocol = location.protocol === "https:" ? "wss:" : "ws:"; socket = new WebSocket(`${protocol}//${location.host}/api/events`); socket.onmessage = event => { const message = JSON.parse(event.data); if (message.type === "playback") applyState({ playback: message.payload }); else applyState(message.payload); }; socket.onclose = () => setTimeout(connectEvents, 1500); }
 
-watch(homeSentinel, element => { homeObserver?.disconnect(); if (element) { homeObserver = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) void loadMoreHome(); }, { rootMargin: "600px 0px" }); homeObserver.observe(element); } });
+function observeHomeSentinel(element) {
+    homeObserver?.disconnect();
+    homeObserver = null;
+    if (!element || !home.value.nextPageToken) return;
+    homeObserver = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) void loadMoreHome(); }, { rootMargin: "600px 0px" });
+    homeObserver.observe(element);
+}
+watch(homeSentinel, observeHomeSentinel);
 watch(() => state.value.nowPlaying?.id, () => void loadWatchContext());
 onMounted(async () => { nowPlayingSession = createNowPlayingSession({ getMedia: () => ({ ...state.value.nowPlaying, ...state.value.playback }), control }); try { await Promise.all([refreshStatus(), loadHome(), refreshBrowserAuth()]); connectEvents(); if (mode.value === "kodi") await openLibrary(libraryType.value); } catch (error) { showToast(error.message, true); } });
 onUnmounted(() => { socket?.close(); homeObserver?.disconnect(); nowPlayingSession?.destroy(); clearTimeout(toastTimer); });

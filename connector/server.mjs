@@ -54,6 +54,7 @@ let connectorState = {
     watchEvents: [],
 };
 const watchTrackingCache = new Map();
+let homeInnertubeConfig = null;
 
 function applyCorsHeaders(response) {
     response.setHeader("Access-Control-Allow-Origin", allowedOrigin);
@@ -485,6 +486,21 @@ function getYouTubeHeaders(cookieHeader, extraHeaders = {}) {
     };
 }
 
+function getYouTubeApiHeaders(cookieHeader, extraHeaders = {}) {
+    const cookieValue = name => cookieHeader.split(/;\s*/).find(cookie => cookie.startsWith(`${name}=`))?.slice(name.length + 1);
+    const sapisid = cookieValue("SAPISID") ?? cookieValue("__Secure-3PAPISID");
+    if (!sapisid) return getYouTubeHeaders(cookieHeader, extraHeaders);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const hash = crypto.createHash("sha1").update(`${timestamp} ${sapisid} https://www.youtube.com`).digest("hex");
+    return getYouTubeHeaders(cookieHeader, {
+        Authorization: `SAPISIDHASH ${timestamp}_${hash}`,
+        Origin: "https://www.youtube.com",
+        "X-Goog-AuthUser": "0",
+        "X-Origin": "https://www.youtube.com",
+        ...extraHeaders,
+    });
+}
+
 async function fetchYouTubePage(targetUrl, cookieHeader) {
     const response = await fetch(targetUrl, {
         headers: getYouTubeHeaders(cookieHeader),
@@ -540,8 +556,16 @@ function findContinuationItems(payload) {
     ];
 
     for (const action of actions) {
-        const items = action?.appendContinuationItemsAction?.continuationItems;
+        const items =
+            action?.appendContinuationItemsAction?.continuationItems ??
+            action?.reloadContinuationItemsCommand?.continuationItems;
         if (Array.isArray(items)) return items;
+    }
+
+    const continuationContents = payload?.continuationContents;
+    for (const continuation of Object.values(continuationContents ?? {})) {
+        if (Array.isArray(continuation?.contents)) return continuation.contents;
+        if (Array.isArray(continuation?.items)) return continuation.items;
     }
 
     return [];
@@ -736,7 +760,7 @@ function extractInnertubeConfig(html) {
     const apiKey = read("INNERTUBE_API_KEY");
     const clientVersion = read("INNERTUBE_CLIENT_VERSION");
     if (!apiKey || !clientVersion) throw new Error("Unable to locate the YouTube client configuration.");
-    return { apiKey, clientVersion };
+    return { apiKey, clientVersion, visitorData: read("VISITOR_DATA") };
 }
 
 function extractVideoId(navigationEndpoint) {
@@ -866,26 +890,28 @@ async function fetchYouTubeHome(cookieHeader = connectorState.session?.cookieHea
         throw new Error("No YouTube session connected.");
     }
 
-    const html = await fetchYouTubePage(youtubeHomeUrl, cookieHeader);
-    const config = extractInnertubeConfig(html);
     let contents;
 
     if (continuation) {
-        const response = await fetch(`https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(config.apiKey)}`, {
+        if (!homeInnertubeConfig) throw new Error("The Home continuation has expired. Refresh Home and try again.");
+        const response = await fetch(`https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(homeInnertubeConfig.apiKey)}`, {
             method: "POST",
-            headers: getYouTubeHeaders(cookieHeader, {
+            headers: getYouTubeApiHeaders(cookieHeader, {
                 "Content-Type": "application/json",
                 "X-YouTube-Client-Name": "1",
-                "X-YouTube-Client-Version": config.clientVersion,
+                "X-YouTube-Client-Version": homeInnertubeConfig.clientVersion,
             }),
             body: JSON.stringify({
-                context: { client: { clientName: "WEB", clientVersion: config.clientVersion, hl: "en", gl: "US" } },
+                context: { client: { clientName: "WEB", clientVersion: homeInnertubeConfig.clientVersion, visitorData: homeInnertubeConfig.visitorData, hl: "en", gl: "US" } },
                 continuation,
             }),
         });
         if (!response.ok) throw new Error(`YouTube continuation request failed with ${response.status}.`);
-        contents = findContinuationItems(await response.json());
+        const continuationPayload = await response.json();
+        contents = findContinuationItems(continuationPayload);
     } else {
+        const html = await fetchYouTubePage(youtubeHomeUrl, cookieHeader);
+        homeInnertubeConfig = extractInnertubeConfig(html);
         contents = findRichGridContents(extractInitialData(html));
     }
 

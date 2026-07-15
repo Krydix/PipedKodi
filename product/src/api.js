@@ -9,6 +9,7 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+    downloadUrl: video => `/api/catalog/download/${encodeURIComponent(video.id)}.mp4?title=${encodeURIComponent(video.title || "video")}`,
     status: () => request("/api/status"),
     home: continuation => request(`/api/catalog/home${continuation ? `?continuation=${encodeURIComponent(continuation)}` : ""}`),
     search: query => request(`/api/catalog/search?q=${encodeURIComponent(query)}`),

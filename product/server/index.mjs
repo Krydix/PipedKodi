@@ -19,6 +19,7 @@ const stateFile = path.join(dataDir, "state.json");
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 8095);
 const ytDlpBin = process.env.YT_DLP_BIN ?? "yt-dlp";
+const ffmpegBin = process.env.FFMPEG_BIN ?? "ffmpeg";
 const connectorUrl = (process.env.YT_SYNC_BASE_URL ?? "http://127.0.0.1:8091").replace(/\/$/, "");
 const pipedApiBaseUrl = process.env.PIPED_API_URL ?? "https://api.piped.private.coffee";
 const sponsorCategories = ["sponsor", "interaction", "selfpromo", "music_offtopic"];
@@ -171,6 +172,31 @@ function normalizeVideo(item) {
 async function runYtDlp(args, timeout = resolveTimeout) {
     const { stdout } = await execFileAsync(ytDlpBin, args, { timeout, maxBuffer: 16 * 1024 * 1024 });
     return stdout;
+}
+
+function downloadVideo(response, videoId, requestedTitle) {
+    if (!/^[\w-]{11}$/.test(videoId)) throw new Error("Invalid video.");
+    const safeTitle = String(requestedTitle || "video").replace(/[\r\n"\\/:*?<>|]+/g, " ").trim().slice(0, 120) || "video";
+    const asciiTitle = safeTitle.normalize("NFKD").replace(/[^\x20-\x7E]+/g, "").trim().slice(0, 120) || "video";
+    response.writeHead(200, {
+        "Content-Type": "video/mp4",
+        "Content-Disposition": `attachment; filename="${asciiTitle}.mp4"; filename*=UTF-8''${encodeURIComponent(`${safeTitle}.mp4`)}`,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    });
+    response.flushHeaders();
+    const source = spawn(ytDlpBin, ["--no-warnings", "--no-playlist", "-f", "best[ext=mp4][vcodec^=avc1][acodec!=none]", "-o", "-", `https://www.youtube.com/watch?v=${videoId}`], { stdio: ["ignore", "pipe", "pipe"] });
+    const remux = spawn(ffmpegBin, ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-c", "copy", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
+    source.stdout.pipe(remux.stdin);
+    remux.stdout.pipe(response);
+    source.stderr.on("data", chunk => console.warn(`Video download: ${String(chunk).trim()}`));
+    remux.stderr.on("data", chunk => console.warn(`Video remux: ${String(chunk).trim()}`));
+    const fail = error => { if (!response.writableEnded) response.destroy(error); };
+    source.once("error", fail);
+    remux.once("error", fail);
+    source.once("close", code => { if (code && !response.writableEnded) fail(new Error("Video download failed.")); });
+    remux.once("close", code => { if (code && !response.writableEnded) fail(new Error("Video conversion failed.")); });
+    response.once("close", () => { if (!source.killed) source.kill(); if (!remux.killed) remux.kill(); });
 }
 
 async function searchCatalog(query, limit = 24) {
@@ -862,6 +888,8 @@ const server = http.createServer(async (request, response) => {
         if (url.pathname === "/api/account/session" && request.method === "DELETE") { await ensureConnector(); const payload = await fetch(`${connectorUrl}/api/ytsync/session`, { method: "DELETE", signal: AbortSignal.timeout(10_000) }); return sendJson(response, payload.ok ? 200 : 400, await payload.json()); }
         if (url.pathname === "/api/catalog/home") return sendJson(response, 200, await homeCatalog(url.searchParams.get("continuation") ?? ""));
         if (url.pathname === "/api/catalog/search") return sendJson(response, 200, { items: await searchCatalog(url.searchParams.get("q")) });
+        const downloadMatch = url.pathname.match(/^\/api\/catalog\/download\/([\w-]{11})\.mp4$/);
+        if (downloadMatch && request.method === "GET") return downloadVideo(response, downloadMatch[1], url.searchParams.get("title"));
         if (url.pathname.startsWith("/api/catalog/channel/")) return sendJson(response, 200, await channelCatalog(decodeURIComponent(url.pathname.split("/").at(-1))));
         if (url.pathname.startsWith("/api/catalog/watch/")) {
             const videoId = decodeURIComponent(url.pathname.split("/")[4]);
