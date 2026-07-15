@@ -1,0 +1,44 @@
+name: kodiyt-remote
+
+services:
+    app:
+        build: .
+        image: kodiyt-remote:local
+        restart: unless-stopped
+        ports:
+            - "${KODIYT_REMOTE_PORT:-8095}:8095"
+        environment:
+            YT_SYNC_BASE_URL: http://youtube-session:8091
+            KODI_REQUEST_TIMEOUT_MS: ${KODI_REQUEST_TIMEOUT_MS:-5000}
+            YT_DLP_TIMEOUT_MS: ${YT_DLP_TIMEOUT_MS:-30000}
+            SPONSORBLOCK_API_URL: ${SPONSORBLOCK_API_URL:-https://sponsor.ajay.app}
+        volumes:
+            - app-data:/data
+        depends_on:
+            youtube-session:
+                condition: service_healthy
+
+    youtube-session:
+        build:
+            context: .
+            dockerfile: connector/Dockerfile
+        image: kodiyt-remote-youtube-session:local
+        restart: unless-stopped
+        environment:
+            PORT: 8091
+            HOST: 0.0.0.0
+            YT_SYNC_ALLOWED_ORIGIN: http://app:8095
+            YT_SYNC_ENCRYPTION_KEY: ${YT_SYNC_ENCRYPTION_KEY:-}
+            YT_SYNC_SESSION_FILE: /data/youtube-session.json
+            YT_DLP_TIMEOUT_MS: ${YT_DLP_TIMEOUT_MS:-30000}
+        volumes:
+            - youtube-session-data:/data
+        healthcheck:
+            test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8091/health"]
+            interval: 5s
+            timeout: 2s
+            retries: 10
+
+volumes:
+    app-data:
+    youtube-session-data:

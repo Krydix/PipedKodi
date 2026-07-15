@@ -150,7 +150,9 @@ function parseJsonCookieInput(input) {
 
 function shouldKeepCookieDomain(domain) {
     const normalizedDomain = String(domain ?? "").toLowerCase();
-    return allowedCookieDomains.some(allowedDomain => normalizedDomain === allowedDomain || normalizedDomain.endsWith(allowedDomain));
+    return allowedCookieDomains.some(
+        allowedDomain => normalizedDomain === allowedDomain || normalizedDomain.endsWith(allowedDomain),
+    );
 }
 
 function shouldKeepCookieName(name) {
@@ -330,10 +332,7 @@ function maybeDecrypt(record) {
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(record.iv, "base64"));
 
     decipher.setAuthTag(Buffer.from(record.tag, "base64"));
-    const plaintext = Buffer.concat([
-        decipher.update(Buffer.from(record.value, "base64")),
-        decipher.final(),
-    ]);
+    const plaintext = Buffer.concat([decipher.update(Buffer.from(record.value, "base64")), decipher.final()]);
 
     return plaintext.toString("utf8");
 }
@@ -481,13 +480,18 @@ function getYouTubeHeaders(cookieHeader, extraHeaders = {}) {
         "Accept-Language": defaultLanguage,
         Cookie: cookieHeader,
         Referer: youtubeHomeUrl,
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         ...extraHeaders,
     };
 }
 
 function getYouTubeApiHeaders(cookieHeader, extraHeaders = {}) {
-    const cookieValue = name => cookieHeader.split(/;\s*/).find(cookie => cookie.startsWith(`${name}=`))?.slice(name.length + 1);
+    const cookieValue = name =>
+        cookieHeader
+            .split(/;\s*/)
+            .find(cookie => cookie.startsWith(`${name}=`))
+            ?.slice(name.length + 1);
     const sapisid = cookieValue("SAPISID") ?? cookieValue("__Secure-3PAPISID");
     if (!sapisid) return getYouTubeHeaders(cookieHeader, extraHeaders);
     const timestamp = Math.floor(Date.now() / 1000);
@@ -550,10 +554,7 @@ function findRichGridContents(payload) {
 }
 
 function findContinuationItems(payload) {
-    const actions = [
-        ...(payload?.onResponseReceivedActions ?? []),
-        ...(payload?.onResponseReceivedEndpoints ?? []),
-    ];
+    const actions = [...(payload?.onResponseReceivedActions ?? []), ...(payload?.onResponseReceivedEndpoints ?? [])];
 
     for (const action of actions) {
         const items =
@@ -591,7 +592,8 @@ function collectRenderers(value, rendererName, results = []) {
 
 function findCommentsContinuation(value) {
     if (!value || typeof value !== "object") return null;
-    const identifiesComments = value.targetId === "comments-section" || value.sectionIdentifier === "comment-item-section";
+    const identifiesComments =
+        value.targetId === "comments-section" || value.sectionIdentifier === "comment-item-section";
     if (identifiesComments) {
         const token = collectRenderers(value, "continuationItemRenderer")
             .map(renderer => renderer.continuationEndpoint?.continuationCommand?.token)
@@ -632,10 +634,14 @@ function findAnyContinuation(value) {
 function extractReplyContinuations(payload) {
     const result = new Map();
     for (const thread of collectRenderers(payload, "commentThreadRenderer")) {
-        const commentId = thread.commentViewModel?.commentViewModel?.commentId ?? thread.comment?.commentRenderer?.commentId;
+        const commentId =
+            thread.commentViewModel?.commentViewModel?.commentId ?? thread.comment?.commentRenderer?.commentId;
         const replies = thread.replies?.commentRepliesRenderer;
-        const token = replies ? collectRenderers(replies, "continuationItemRenderer")
-            .map(renderer => renderer.continuationEndpoint?.continuationCommand?.token).find(Boolean) : null;
+        const token = replies
+            ? collectRenderers(replies, "continuationItemRenderer")
+                  .map(renderer => renderer.continuationEndpoint?.continuationCommand?.token)
+                  .find(Boolean)
+            : null;
         if (commentId && token) result.set(commentId, token);
     }
     return result;
@@ -656,7 +662,7 @@ function normalizeWatchRecommendation(renderer) {
         uploadedDate: extractRendererRunsText(renderer.publishedTimeText),
         duration: parseDurationSeconds(extractRendererRunsText(renderer.lengthText)),
         views: parseViewCount(extractRendererRunsText(renderer.viewCountText)),
-        source: "youtube-sync",
+        source: "youtube",
     };
 }
 
@@ -674,7 +680,13 @@ function normalizeYouTubeComment(thread) {
         publishedText: extractRendererRunsText(published) || String(published ?? ""),
         likeCount: extractRendererRunsText(properties.voteCount) || String(properties.likeCount ?? ""),
         avatar: pickThumbnail(properties.authorThumbnail?.thumbnails ?? properties.author?.avatar?.image?.sources),
-        replyCount: Number(properties.replyCount ?? thread.replies?.commentRepliesRenderer?.viewReplies?.buttonRenderer?.text?.simpleText?.match(/\d+/)?.[0] ?? 0),
+        replyCount: Number(
+            properties.replyCount ??
+                thread.replies?.commentRepliesRenderer?.viewReplies?.buttonRenderer?.text?.simpleText?.match(
+                    /\d+/,
+                )?.[0] ??
+                0,
+        ),
     };
 }
 
@@ -695,16 +707,20 @@ function normalizeYouTubeCommentEntity(mutation, replyContinuations = new Map())
 }
 
 async function requestYouTubeContinuation(videoId, continuation, config) {
-    if (typeof continuation !== "string" || !continuation || continuation.length > 16_000) throw new Error("Invalid YouTube continuation.");
+    if (typeof continuation !== "string" || !continuation || continuation.length > 16_000)
+        throw new Error("Invalid YouTube continuation.");
     const response = await fetch(`https://www.youtube.com/youtubei/v1/next?key=${encodeURIComponent(config.apiKey)}`, {
         method: "POST",
-        headers: getYouTubeHeaders(connectorState.session.cookieHeader, {
+        headers: getYouTubeHeaders(connectorState.session?.cookieHeader ?? "", {
             "Content-Type": "application/json",
             "X-YouTube-Client-Name": "1",
             "X-YouTube-Client-Version": config.clientVersion,
             Referer: `${youtubeWatchUrl}?v=${videoId}`,
         }),
-        body: JSON.stringify({ context: { client: { clientName: "WEB", clientVersion: config.clientVersion, hl: "en", gl: "US" } }, continuation }),
+        body: JSON.stringify({
+            context: { client: { clientName: "WEB", clientVersion: config.clientVersion, hl: "en", gl: "US" } },
+            continuation,
+        }),
     });
     if (!response.ok) throw new Error(`YouTube comments request failed with ${response.status}.`);
     return response.json();
@@ -712,9 +728,13 @@ async function requestYouTubeContinuation(videoId, continuation, config) {
 
 function normalizeYouTubeCommentsPayload(payload, replies = false) {
     const replyContinuations = extractReplyContinuations(payload);
-    const entityComments = (payload.frameworkUpdates?.entityBatchUpdate?.mutations ?? [])
-        .map(mutation => normalizeYouTubeCommentEntity(mutation, replyContinuations));
-    const comments = [...entityComments, ...collectRenderers(payload, "commentThreadRenderer").map(normalizeYouTubeComment)]
+    const entityComments = (payload.frameworkUpdates?.entityBatchUpdate?.mutations ?? []).map(mutation =>
+        normalizeYouTubeCommentEntity(mutation, replyContinuations),
+    );
+    const comments = [
+        ...entityComments,
+        ...collectRenderers(payload, "commentThreadRenderer").map(normalizeYouTubeComment),
+    ]
         .filter(comment => comment?.text)
         .filter((comment, index, all) => all.findIndex(entry => entry.id === comment.id) === index);
     return { comments, nextPageToken: replies ? findAnyContinuation(payload) : findMainCommentsContinuation(payload) };
@@ -722,19 +742,21 @@ function normalizeYouTubeCommentsPayload(payload, replies = false) {
 
 async function fetchYouTubeCommentsContinuation(videoId, continuation, replies = false) {
     if (!/^[\w-]{11}$/.test(videoId ?? "")) throw new Error("A valid YouTube video id is required.");
-    if (!connectorState.session?.cookieHeader) throw new Error("No YouTube session connected.");
-    const watchUrl = new URL(youtubeWatchUrl); watchUrl.searchParams.set("v", videoId);
-    const html = await fetchYouTubePage(watchUrl, connectorState.session.cookieHeader);
+    const watchUrl = new URL(youtubeWatchUrl);
+    watchUrl.searchParams.set("v", videoId);
+    const html = await fetchYouTubePage(watchUrl, connectorState.session?.cookieHeader ?? "");
     const payload = await requestYouTubeContinuation(videoId, continuation, extractInnertubeConfig(html));
-    return { source: "youtube-auth", ...normalizeYouTubeCommentsPayload(payload, replies) };
+    return {
+        source: connectorState.session ? "youtube-auth" : "youtube",
+        ...normalizeYouTubeCommentsPayload(payload, replies),
+    };
 }
 
 async function fetchYouTubeWatchContext(videoId) {
     if (!/^[\w-]{11}$/.test(videoId ?? "")) throw new Error("A valid YouTube video id is required.");
-    if (!connectorState.session?.cookieHeader) throw new Error("No YouTube session connected.");
     const watchUrl = new URL(youtubeWatchUrl);
     watchUrl.searchParams.set("v", videoId);
-    const html = await fetchYouTubePage(watchUrl, connectorState.session.cookieHeader);
+    const html = await fetchYouTubePage(watchUrl, connectorState.session?.cookieHeader ?? "");
     const initialData = extractInitialData(html);
     const config = extractInnertubeConfig(html);
     let commentPayload = initialData;
@@ -749,10 +771,19 @@ async function fetchYouTubeWatchContext(videoId) {
     const recommendations = [
         ...recommendationRenderers.map(normalizeWatchRecommendation),
         ...collectRenderers(initialData, "lockupViewModel").map(normalizeLockupHomeItem),
-    ].filter(Boolean)
-        .filter((item, index, all) => item.url !== `/watch?v=${videoId}` && all.findIndex(entry => entry.url === item.url) === index);
+    ]
+        .filter(Boolean)
+        .filter(
+            (item, index, all) =>
+                item.url !== `/watch?v=${videoId}` && all.findIndex(entry => entry.url === item.url) === index,
+        );
     const normalizedComments = normalizeYouTubeCommentsPayload(commentPayload);
-    return { source: "youtube-auth", recommendations, ...normalizedComments, commentsDisabled: !continuation && normalizedComments.comments.length === 0 };
+    return {
+        source: connectorState.session ? "youtube-auth" : "youtube",
+        recommendations,
+        ...normalizedComments,
+        commentsDisabled: !continuation && normalizedComments.comments.length === 0,
+    };
 }
 
 function extractInnertubeConfig(html) {
@@ -837,7 +868,8 @@ function normalizeLockupHomeItem(lockupViewModel) {
         uploaderName: channelRow[0] ?? "",
         uploaderUrl: "",
         uploaderAvatar: pickThumbnail(
-            lockupViewModel?.metadata?.lockupMetadataViewModel?.image?.decoratedAvatarViewModel?.avatar?.avatarViewModel?.image?.sources,
+            lockupViewModel?.metadata?.lockupMetadataViewModel?.image?.decoratedAvatarViewModel?.avatar?.avatarViewModel
+                ?.image?.sources,
         ),
         uploadedDate: statsRow[1] ?? "",
         duration: extractLockupDuration(lockupViewModel),
@@ -894,18 +926,29 @@ async function fetchYouTubeHome(cookieHeader = connectorState.session?.cookieHea
 
     if (continuation) {
         if (!homeInnertubeConfig) throw new Error("The Home continuation has expired. Refresh Home and try again.");
-        const response = await fetch(`https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(homeInnertubeConfig.apiKey)}`, {
-            method: "POST",
-            headers: getYouTubeApiHeaders(cookieHeader, {
-                "Content-Type": "application/json",
-                "X-YouTube-Client-Name": "1",
-                "X-YouTube-Client-Version": homeInnertubeConfig.clientVersion,
-            }),
-            body: JSON.stringify({
-                context: { client: { clientName: "WEB", clientVersion: homeInnertubeConfig.clientVersion, visitorData: homeInnertubeConfig.visitorData, hl: "en", gl: "US" } },
-                continuation,
-            }),
-        });
+        const response = await fetch(
+            `https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(homeInnertubeConfig.apiKey)}`,
+            {
+                method: "POST",
+                headers: getYouTubeApiHeaders(cookieHeader, {
+                    "Content-Type": "application/json",
+                    "X-YouTube-Client-Name": "1",
+                    "X-YouTube-Client-Version": homeInnertubeConfig.clientVersion,
+                }),
+                body: JSON.stringify({
+                    context: {
+                        client: {
+                            clientName: "WEB",
+                            clientVersion: homeInnertubeConfig.clientVersion,
+                            visitorData: homeInnertubeConfig.visitorData,
+                            hl: "en",
+                            gl: "US",
+                        },
+                    },
+                    continuation,
+                }),
+            },
+        );
         if (!response.ok) throw new Error(`YouTube continuation request failed with ${response.status}.`);
         const continuationPayload = await response.json();
         contents = findContinuationItems(continuationPayload);
@@ -1042,7 +1085,7 @@ function createNetscapeCookieFile(cookieHeader) {
 async function markVideoWatchedWithYtDlp(videoId) {
     if (!connectorState.session?.cookieHeader) throw new Error("No YouTube session connected.");
 
-    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "pipedkodi-ytdlp-"));
+    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "kodi-youtube-ytdlp-"));
     const cookieFile = path.join(temporaryDirectory, "cookies.txt");
 
     try {
@@ -1246,7 +1289,11 @@ const server = http.createServer(async (request, response) => {
 
         if (requestUrl.pathname === "/api/ytsync/watch-context/continuation" && request.method === "POST") {
             const body = await readJsonBody(request);
-            sendJson(response, 200, await fetchYouTubeCommentsContinuation(body.videoId, body.continuation, body.replies === true));
+            sendJson(
+                response,
+                200,
+                await fetchYouTubeCommentsContinuation(body.videoId, body.continuation, body.replies === true),
+            );
             return;
         }
 

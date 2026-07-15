@@ -1,65 +1,36 @@
 {
-    "name": "piped",
-    "version": "0.1.0",
+    "name": "kodiyt-remote",
+    "version": "1.0.0",
     "private": true,
     "type": "module",
+    "packageManager": "pnpm@10.13.1",
     "scripts": {
         "dev": "vite",
         "build": "vite build",
-        "build:full": "VITE_BUILD_LEGACY=true VITE_BUILD_SOURCEMAP=true VITE_LINT_BUILD=true vite build",
         "preview": "vite preview",
-        "remote-relay": "node ./server/remote-relay.mjs",
-        "youtube-connector": "node ./connector/server.mjs",
-        "product:dev": "vite --config product/vite.config.js",
-        "product:server": "node ./product/server/index.mjs",
-        "product:build": "vite build --config product/vite.config.js",
-        "format": "prettier -w --ignore-path .gitignore **/**.{js,vue,json}",
-        "lint": "eslint --fix --color ."
+        "start": "node ./server/index.mjs",
+        "connector": "node ./connector/server.mjs",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "lint": "eslint ."
     },
     "dependencies": {
-        "@vueuse/core": "^14.2.1",
-        "dompurify": "3.4.0",
-        "fast-xml-parser": "5.5.12",
-        "hotkeys-js": "4.0.3",
-        "javascript-time-ago": "2.6.4",
-        "linkify-html": "4.3.2",
-        "linkifyjs": "4.3.2",
-        "qrcode": "^1.5.4",
-        "reka-ui": "^2.9.2",
-        "shaka-player": "5.1.0",
         "vue": "3.5.32",
-        "vue-i18n": "11.3.2",
-        "vue-router": "5.0.4",
         "ws": "8.18.3"
     },
     "devDependencies": {
         "@eslint/js": "10.0.1",
-        "@iconify-json/fa6-brands": "1.2.6",
-        "@iconify-json/fa6-solid": "1.2.4",
-        "@intlify/unplugin-vue-i18n": "11.1.1",
-        "@tailwindcss/vite": "^4.2.2",
-        "@vitejs/plugin-legacy": "8.0.1",
         "@vitejs/plugin-vue": "6.0.6",
         "@vue/compiler-sfc": "3.5.32",
         "eslint": "10.2.0",
         "eslint-config-prettier": "10.1.8",
-        "eslint-plugin-better-tailwindcss": "^4.3.2",
-        "eslint-plugin-prettier": "5.5.5",
         "eslint-plugin-vue": "10.8.0",
         "globals": "17.5.0",
-        "lightningcss": "1.32.0",
         "prettier": "3.8.2",
-        "tailwindcss": "^4.2.2",
-        "unplugin-icons": "^23.0.1",
-        "unplugin-vue-components": "^32.0.0",
         "vite": "8.0.8",
-        "vite-plugin-eslint": "1.8.1",
-        "vite-plugin-pwa": "1.2.0",
-        "vue-eslint-parser": "10.4.0",
-        "workbox-window": "7.4.0"
+        "vue-eslint-parser": "10.4.0"
     },
-    "browserslist": [
-        "last 1 chrome version",
-        "last 1 firefox version"
-    ]
+    "engines": {
+        "node": ">=22"
+    }
 }

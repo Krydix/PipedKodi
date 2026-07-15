@@ -1,26 +1,18 @@
-FROM node:lts-alpine AS build
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY index.html vite.config.js ./
+COPY src ./src
+RUN pnpm build
 
-WORKDIR /app/
-
-RUN --mount=type=cache,target=/var/cache/apk \
-    apk add --no-cache \
-    curl
-
-COPY . .
-
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
-RUN --mount=type=cache,target=/root/.local/share/pnpm \
-    --mount=type=cache,target=/app/node_modules \
-    pnpm install --prefer-offline && \
-    pnpm build && ./localizefonts.sh
-
-FROM nginxinc/nginx-unprivileged:alpine
-
-COPY --chown=101:101 --from=build /app/dist/ /usr/share/nginx/html/
-
-COPY --chown=101:101 docker/nginx.conf /etc/nginx/conf.d/default.conf
-
-COPY docker/entrypoint.sh /entrypoint.sh
-
-ENTRYPOINT [ "/entrypoint.sh" ]
+FROM node:22-alpine
+WORKDIR /app
+RUN apk add --no-cache ffmpeg yt-dlp
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY server ./server
+ENV HOST=0.0.0.0 PORT=8095 KODIYT_REMOTE_DATA_DIR=/data
+VOLUME ["/data"]
+EXPOSE 8095
+CMD ["node", "server/index.mjs"]

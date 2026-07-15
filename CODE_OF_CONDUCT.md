@@ -8,21 +8,21 @@ In the interest of fostering an open and welcoming environment, we as contributo
 
 Examples of behavior that contributes to creating a positive environment include:
 
--   Using welcoming and inclusive language
--   Being respectful of differing viewpoints and experiences
--   Gracefully accepting constructive criticism
--   Focusing on what is best for the community
--   Showing empathy towards other community members
+- Using welcoming and inclusive language
+- Being respectful of differing viewpoints and experiences
+- Gracefully accepting constructive criticism
+- Focusing on what is best for the community
+- Showing empathy towards other community members
 
 Examples of unacceptable behavior include but are not limited to:
 
--   The usage of sexualized language or imagery and unwelcome sexual attention or advances
--   Trolling, insulting/derogatory comments, threats, and personal or political attacks
--   Harassment of any form
--   Publishing others' private information, such as a physical or electronic address, without explicit permission from the individual
--   Derailling conversations unnecessarily in a way that is not constructive, such as repeatedly posting off-topic comments whilst not in an off-topic channel
--   Other conduct which could reasonably be considered inappropriate in a professional setting
--   Tagging maintainers or project members without being one yourself
+- The usage of sexualized language or imagery and unwelcome sexual attention or advances
+- Trolling, insulting/derogatory comments, threats, and personal or political attacks
+- Harassment of any form
+- Publishing others' private information, such as a physical or electronic address, without explicit permission from the individual
+- Derailling conversations unnecessarily in a way that is not constructive, such as repeatedly posting off-topic comments whilst not in an off-topic channel
+- Other conduct which could reasonably be considered inappropriate in a professional setting
+- Tagging maintainers or project members without being one yourself
 
 ## Enforcement Responsibilities
 

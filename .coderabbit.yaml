@@ -1,4 +1,0 @@
-knowledge_base:
-    linked_repositories:
-        - repository: "TeamPiped/Piped"
-          instructions: "Contains the backend code for the Piped project that is used by various different frontends, including the Vue one."

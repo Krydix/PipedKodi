@@ -1,61 +1,35 @@
-PNPM := pnpm
-HOST := 0.0.0.0
-PREVIEW_PORT := 4173
-RELAY_PORT := 8090
-CONNECTOR_PORT := 8091
-DOCKER_IMAGE ?= pipedkodi:latest
-DOCKERFILE ?= Dockerfile
+PNPM ?= pnpm
+IMAGE ?= kodiyt-remote:local
 
-.PHONY: build build-full relay connector preview run start dev-up kill-ports kill-connector-port docker product-build product-server product-dev product
+.PHONY: install dev build start connector lint format-check check docker-up docker-down
+
+install:
+	$(PNPM) install
+
+dev:
+	@node ./server/index.mjs & server_pid=$$!; \
+	trap 'kill $$server_pid 2>/dev/null || true' EXIT INT TERM; \
+	$(PNPM) dev
 
 build:
 	$(PNPM) build
 
-build-full:
-	$(PNPM) build:full
+start:
+	$(PNPM) start
 
-relay:
-	$(PNPM) remote-relay
+connector:
+	$(PNPM) connector
 
-kill-connector-port:
-	lsof -tiTCP:$(CONNECTOR_PORT) -sTCP:LISTEN | xargs kill 2>/dev/null || true
+lint:
+	$(PNPM) lint
 
-connector: kill-connector-port
-	$(PNPM) youtube-connector
+format-check:
+	$(PNPM) format:check
 
-preview:
-	$(PNPM) preview --host $(HOST) --port $(PREVIEW_PORT) --strictPort
+check: lint format-check build
 
-docker:
-	docker build -f $(DOCKERFILE) -t $(DOCKER_IMAGE) .
+docker-up:
+	docker compose up --build -d
 
-product-build:
-	$(PNPM) product:build
-
-product-server:
-	$(PNPM) product:server
-
-product-dev:
-	$(PNPM) product:dev
-
-product: product-build
-	$(PNPM) product:server
-
-kill-ports:
-	lsof -tiTCP:$(PREVIEW_PORT) -tiTCP:$(RELAY_PORT) -tiTCP:$(CONNECTOR_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
-
-run: kill-ports build
-	trap 'kill 0' EXIT INT TERM; \
-	$(PNPM) youtube-connector & \
-	$(PNPM) remote-relay & \
-	$(PNPM) preview --host $(HOST) --port $(PREVIEW_PORT) --strictPort & \
-	wait
-
-start: kill-ports
-	trap 'kill 0' EXIT INT TERM; \
-	$(PNPM) youtube-connector & \
-	$(PNPM) remote-relay & \
-	$(PNPM) preview --host $(HOST) --port $(PREVIEW_PORT) --strictPort & \
-	wait
-
-dev-up: run
+docker-down:
+	docker compose down
