@@ -6,7 +6,7 @@ CONNECTOR_PORT := 8091
 DOCKER_IMAGE ?= pipedkodi:latest
 DOCKERFILE ?= Dockerfile
 
-.PHONY: build build-full relay connector preview run start dev-up kill-ports kill-connector-port docker
+.PHONY: build build-full relay connector preview run start dev-up kill-ports kill-connector-port docker product-build product-server product-dev product
 
 build:
 	$(PNPM) build
@@ -28,6 +28,18 @@ preview:
 
 docker:
 	docker build -f $(DOCKERFILE) -t $(DOCKER_IMAGE) .
+
+product-build:
+	$(PNPM) product:build
+
+product-server:
+	$(PNPM) product:server
+
+product-dev:
+	$(PNPM) product:dev
+
+product: product-build
+	$(PNPM) product:server
 
 kill-ports:
 	lsof -tiTCP:$(PREVIEW_PORT) -tiTCP:$(RELAY_PORT) -tiTCP:$(CONNECTOR_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true

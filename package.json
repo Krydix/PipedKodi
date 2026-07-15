@@ -10,6 +10,9 @@
         "preview": "vite preview",
         "remote-relay": "node ./server/remote-relay.mjs",
         "youtube-connector": "node ./connector/server.mjs",
+        "product:dev": "vite --config product/vite.config.js",
+        "product:server": "node ./product/server/index.mjs",
+        "product:build": "vite build --config product/vite.config.js",
         "format": "prettier -w --ignore-path .gitignore **/**.{js,vue,json}",
         "lint": "eslint --fix --color ."
     },

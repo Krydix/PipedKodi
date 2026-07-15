@@ -2,6 +2,7 @@
 node_modules
 /dist
 /dist-ci
+/product/dist
 
 # local env files
 .env.local

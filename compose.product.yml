@@ -1,0 +1,36 @@
+name: pipedkodi
+
+services:
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile.product
+        restart: unless-stopped
+        ports:
+            - "${PIPEDKODI_PORT:-8095}:8095"
+        environment:
+            YT_SYNC_BASE_URL: http://youtube-session:8091
+            KODI_REQUEST_TIMEOUT_MS: ${KODI_REQUEST_TIMEOUT_MS:-5000}
+            YT_DLP_TIMEOUT_MS: ${YT_DLP_TIMEOUT_MS:-30000}
+        volumes:
+            - pipedkodi-data:/data
+        depends_on:
+            - youtube-session
+
+    youtube-session:
+        build:
+            context: .
+            dockerfile: connector/Dockerfile
+        restart: unless-stopped
+        environment:
+            PORT: 8091
+            HOST: 0.0.0.0
+            YT_SYNC_ALLOWED_ORIGIN: http://app:8095
+            YT_SYNC_ENCRYPTION_KEY: ${YT_SYNC_ENCRYPTION_KEY:-}
+            YT_SYNC_SESSION_FILE: /data/youtube-session.json
+        volumes:
+            - youtube-session-data:/data
+
+volumes:
+    pipedkodi-data:
+    youtube-session-data:
