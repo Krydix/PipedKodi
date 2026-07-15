@@ -64,7 +64,7 @@
                         <button class="play-button" :aria-label="state.playback.paused ? 'Play' : 'Pause'" @click="control({ action: 'playpause' })">{{ state.playback.paused ? "▶" : "Ⅱ" }}</button>
                         <button class="icon-button" aria-label="Forward ten seconds" @click="control({ action: 'seekBy', seconds: 10 })">+10</button>
                     </div>
-                    <label class="volume"><span>Volume</span><input v-model.number="volumePosition" type="range" min="0" max="100" @input="adjustingVolume = true" @change="commitVolume" /></label>
+                    <label class="volume"><span>Volume</span><input v-model.number="volumePosition" type="range" min="0" max="100" @input="updateVolume" @change="finishVolume" /></label>
                     <p v-if="state.playback.error" class="error-text">{{ state.playback.error }}</p>
                 </article>
                 <div v-else class="empty-state"><span>▰</span><h2>Nothing playing</h2><p>Choose a video from Home or Search.</p></div>
@@ -151,7 +151,7 @@ const scrubberPosition = ref(0); const scrubbing = ref(false); const volumePosit
 const kodiForm = ref({ address: "", username: "", password: "" }); const settingsMessage = ref(""); const settingsError = ref(false); const saving = ref(false); const toast = ref(null);
 const discovering = ref(false); const discoveryComplete = ref(false); const discoveredDevices = ref([]);
 const browserAuth = ref({ supported: true, ready: false }); const browserChecked = ref(false); const accountBusy = ref(false); const accountMessage = ref(""); const accountError = ref(false);
-let toastTimer; let socket; let nowPlayingSession; let homeObserver;
+let toastTimer; let socket; let nowPlayingSession; let homeObserver; let pendingVolume = null; let volumeRequest = null; let volumeInteraction = 0;
 const progress = computed(() => state.value.playback.duration ? Math.min(100, scrubberPosition.value / state.value.playback.duration * 100) : 0);
 const segmentGradient = computed(() => {
     const duration = Number(state.value.playback.duration) || 0;
@@ -187,12 +187,37 @@ async function commitScrub() {
     await control({ action: "seek", seconds });
     scrubbing.value = false;
 }
-async function commitVolume() {
+function normalizedVolume() {
     const volume = Math.min(Math.max(Math.round(Number(volumePosition.value) || 0), 0), 100);
     volumePosition.value = volume;
     state.value.playback.volume = volume;
-    await control({ action: "volume", volume });
-    adjustingVolume.value = false;
+    return volume;
+}
+function sendPendingVolume() {
+    if (volumeRequest) return volumeRequest;
+    volumeRequest = (async () => {
+        while (pendingVolume !== null) {
+            const volume = pendingVolume;
+            pendingVolume = null;
+            try { await api.control({ action: "volume", volume }); } catch (error) { showToast(error.message, true); }
+        }
+    })().finally(() => {
+        volumeRequest = null;
+        if (pendingVolume !== null) void sendPendingVolume();
+    });
+    return volumeRequest;
+}
+function updateVolume() {
+    if (!adjustingVolume.value) volumeInteraction += 1;
+    adjustingVolume.value = true;
+    pendingVolume = normalizedVolume();
+    void sendPendingVolume();
+}
+async function finishVolume() {
+    const interaction = volumeInteraction;
+    pendingVolume = normalizedVolume();
+    do { await sendPendingVolume(); } while (volumeRequest || pendingVolume !== null);
+    if (interaction === volumeInteraction) adjustingVolume.value = false;
 }
 async function openChannel(item) { if (!item.channelId) return; previousView.value = view.value; view.value = "channel"; loading.value = true; channel.value = { title: item.channelName, items: [] }; try { channel.value = await api.channel(item.channelId); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
 function navigate(next) { const focusSearch = next === "search" && view.value === "search"; view.value = next; if (focusSearch) nextTick(() => searchInput.value?.focus()); if (next === "settings") void refreshBrowserAuth(); window.scrollTo({ top: 0, behavior: "smooth" }); }
