@@ -1,5 +1,7 @@
 FROM node:lts-alpine
 
+RUN apk add --no-cache yt-dlp
+
 WORKDIR /app
 
 COPY connector/package.json ./package.json

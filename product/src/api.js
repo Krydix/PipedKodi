@@ -10,7 +10,7 @@ async function request(path, options = {}) {
 
 export const api = {
     status: () => request("/api/status"),
-    home: () => request("/api/catalog/home"),
+    home: continuation => request(`/api/catalog/home${continuation ? `?continuation=${encodeURIComponent(continuation)}` : ""}`),
     search: query => request(`/api/catalog/search?q=${encodeURIComponent(query)}`),
     channel: id => request(`/api/catalog/channel/${encodeURIComponent(id)}`),
     queue: () => request("/api/queue"),

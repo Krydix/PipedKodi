@@ -20,10 +20,15 @@ const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 8095);
 const ytDlpBin = process.env.YT_DLP_BIN ?? "yt-dlp";
 const connectorUrl = (process.env.YT_SYNC_BASE_URL ?? "http://127.0.0.1:8091").replace(/\/$/, "");
+const pipedApiBaseUrl = process.env.PIPED_API_URL ?? "https://api.piped.private.coffee";
+const sponsorCategories = ["sponsor", "interaction", "selfpromo", "music_offtopic"];
 const resolveTimeout = Number(process.env.YT_DLP_TIMEOUT_MS ?? 30_000);
 const kodiTimeout = Number(process.env.KODI_REQUEST_TIMEOUT_MS ?? 5_000);
 const browserDebugPort = Number(process.env.YOUTUBE_BROWSER_DEBUG_PORT ?? 9222);
 const browserDebugUrl = `http://127.0.0.1:${browserDebugPort}`;
+const silentAudioSampleRate = 8000;
+const silentAudioMaxDurationSeconds = 60 * 60 * 12;
+const silentAudioChunkSizeBytes = 64 * 1024;
 const defaultBrowserProfileDir = process.platform === "darwin"
     ? path.join(os.homedir(), "Library", "Application Support", "PipedKodi", "youtube-browser-profile")
     : process.platform === "win32"
@@ -39,6 +44,7 @@ let state = {
     kodi: { address: "http://127.0.0.1:8080/jsonrpc", username: "kodi", password: "" },
     queue: [],
     nowPlaying: null,
+    sponsorSegments: [],
     playback: { paused: true, buffering: false, currentTime: 0, duration: 0, volume: 50 },
 };
 const clients = new Set();
@@ -46,6 +52,9 @@ const streamCache = new Map();
 let pollTimer = null;
 let hadActivePlayer = false;
 let advancingQueue = false;
+let youtubeTracking = { videoId: null, started: false, ended: false, lastPaused: true, lastSentAt: 0, lastSentTime: 0 };
+let trackingQueue = Promise.resolve();
+let skippedSponsorSegments = new Set();
 
 function publicKodi() {
     return {
@@ -56,7 +65,7 @@ function publicKodi() {
 }
 
 function snapshot() {
-    return { kodi: publicKodi(), queue: state.queue, nowPlaying: state.nowPlaying, playback: state.playback };
+    return { kodi: publicKodi(), queue: state.queue, nowPlaying: state.nowPlaying, sponsorSegments: state.sponsorSegments, playback: state.playback };
 }
 
 async function persist() {
@@ -184,9 +193,13 @@ function normalizeConnectorVideo(item) {
     });
 }
 
-async function connectorRequest(pathname) {
+async function connectorRequest(pathname, options = {}) {
     await ensureConnector();
-    const response = await fetch(`${connectorUrl}${pathname}`, { signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(`${connectorUrl}${pathname}`, {
+        ...options,
+        headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
+        signal: AbortSignal.timeout(10_000),
+    });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error ?? `YouTube account service returned ${response.status}.`);
     return payload;
@@ -313,12 +326,14 @@ async function completeBrowserAuth() {
     return payload;
 }
 
-async function homeCatalog() {
+async function homeCatalog(continuation = "") {
     try {
-        const home = await connectorRequest("/api/ytsync/home");
-        return { personalized: true, items: (home.items ?? []).map(normalizeConnectorVideo).filter(Boolean) };
+        const path = `/api/ytsync/home${continuation ? `?continuation=${encodeURIComponent(continuation)}` : ""}`;
+        const home = await connectorRequest(path);
+        return { personalized: true, items: (home.items ?? []).map(normalizeConnectorVideo).filter(Boolean), nextPageToken: home.nextPageToken ?? null };
     } catch {
-        return { personalized: false, items: await searchCatalog("popular videos", 24) };
+        if (continuation) throw new Error("Unable to load more Home recommendations.");
+        return { personalized: false, items: await searchCatalog("popular videos", 24), nextPageToken: null };
     }
 }
 
@@ -448,15 +463,38 @@ async function resolveStream(videoId) {
     return url;
 }
 
+async function fetchSponsorSegments(videoId) {
+    const url = new URL(`/sponsors/${videoId}`, pipedApiBaseUrl);
+    url.searchParams.set("category", JSON.stringify(sponsorCategories));
+    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`SponsorBlock request failed with HTTP ${response.status}.`);
+    const payload = await response.json();
+    return (Array.isArray(payload?.segments) ? payload.segments : []).filter(segment => {
+        const range = segment?.segment;
+        return Array.isArray(range) && range.length >= 2 && Number.isFinite(Number(range[0])) && Number.isFinite(Number(range[1])) && Number(range[1]) > Number(range[0]);
+    });
+}
+
 async function playVideo(video) {
     const normalized = normalizeVideo(video);
     if (!normalized) throw new Error("A valid YouTube video is required.");
     if (video.queueId) state.queue = state.queue.filter(item => item.queueId !== video.queueId);
     state.playback = { ...state.playback, buffering: true, paused: false, currentTime: 0, duration: normalized.duration };
     state.nowPlaying = normalized;
+    state.sponsorSegments = [];
+    skippedSponsorSegments = new Set();
+    youtubeTracking = { videoId: normalized.id, started: false, ended: false, lastPaused: true, lastSentAt: 0, lastSentTime: 0 };
     broadcast("state");
     try {
-        await kodiRpc("Player.Open", { item: { file: await resolveStream(normalized.id) } });
+        const [streamUrl, sponsorSegments] = await Promise.all([
+            resolveStream(normalized.id),
+            fetchSponsorSegments(normalized.id).catch(error => {
+                console.warn("Unable to fetch SponsorBlock segments:", error.message);
+                return [];
+            }),
+        ]);
+        state.sponsorSegments = sponsorSegments;
+        await kodiRpc("Player.Open", { item: { file: streamUrl } });
         state.playback.buffering = false;
         await persist();
         ensurePolling();
@@ -469,9 +507,83 @@ async function playVideo(video) {
     }
 }
 
+function sendYouTubeWatchEvent(eventType, playback = state.playback) {
+    const videoId = state.nowPlaying?.id;
+    if (!/^[\w-]{11}$/.test(videoId ?? "")) return;
+    const payload = {
+        eventType,
+        videoId,
+        currentTime: Math.max(0, Number(playback.currentTime) || 0),
+        duration: Math.max(0, Number(playback.duration || state.nowPlaying?.duration) || 0),
+        watchedSeconds: Math.max(0, Number(playback.currentTime) || 0),
+        playbackRate: 1,
+        paused: Boolean(playback.paused),
+        buffering: Boolean(playback.buffering),
+    };
+    trackingQueue = trackingQueue
+        .then(() => connectorRequest("/api/ytsync/watch", { method: "POST", body: JSON.stringify(payload) }))
+        .catch(error => console.warn(`Unable to send YouTube ${eventType} event:`, error.message));
+}
+
+function syncYouTubeTracking({ playerActive }) {
+    const videoId = state.nowPlaying?.id;
+    if (!videoId) return;
+    if (youtubeTracking.videoId !== videoId) {
+        youtubeTracking = { videoId, started: false, ended: false, lastPaused: true, lastSentAt: 0, lastSentTime: 0 };
+    }
+    const now = Date.now();
+    const currentTime = Number(state.playback.currentTime) || 0;
+    const duration = Number(state.playback.duration || state.nowPlaying?.duration) || 0;
+    if (!youtubeTracking.started && playerActive) {
+        youtubeTracking.started = true;
+        youtubeTracking.lastPaused = Boolean(state.playback.paused);
+        youtubeTracking.lastSentAt = now;
+        youtubeTracking.lastSentTime = currentTime;
+        sendYouTubeWatchEvent("start");
+        return;
+    }
+    if (!youtubeTracking.started || youtubeTracking.ended) return;
+    if (!playerActive) {
+        const completed = duration > 0 && currentTime >= Math.max(duration - 3, duration * 0.9);
+        if (completed) {
+            youtubeTracking.ended = true;
+            sendYouTubeWatchEvent("ended", { ...state.playback, paused: true });
+        } else if (!youtubeTracking.lastPaused) {
+            youtubeTracking.lastPaused = true;
+            sendYouTubeWatchEvent("pause", { ...state.playback, paused: true });
+        }
+        return;
+    }
+    const paused = Boolean(state.playback.paused);
+    if (paused !== youtubeTracking.lastPaused) {
+        youtubeTracking.lastPaused = paused;
+        sendYouTubeWatchEvent(paused ? "pause" : "resume");
+    }
+    if (!paused && (now - youtubeTracking.lastSentAt >= 15_000 || Math.abs(currentTime - youtubeTracking.lastSentTime) >= 30)) {
+        youtubeTracking.lastSentAt = now;
+        youtubeTracking.lastSentTime = currentTime;
+        sendYouTubeWatchEvent("progress");
+    }
+}
+
 async function activePlayerId() {
     const players = await kodiRpc("Player.GetActivePlayers");
     return players?.find(player => player.type === "video")?.playerid ?? null;
+}
+
+async function maybeSkipSponsorSegment(playerid, currentTime) {
+    for (let index = 0; index < state.sponsorSegments.length; index += 1) {
+        if (skippedSponsorSegments.has(index)) continue;
+        const [start, end] = state.sponsorSegments[index].segment.map(Number);
+        if (currentTime > end + 1) {
+            skippedSponsorSegments.add(index);
+        } else if (currentTime >= start && currentTime < end) {
+            skippedSponsorSegments.add(index);
+            await kodiRpc("Player.Seek", { playerid, value: kodiSeekValue(end) });
+            return end;
+        }
+    }
+    return currentTime;
 }
 
 async function pollKodi() {
@@ -486,11 +598,14 @@ async function pollKodi() {
                 try { await playVideo(next); } finally { advancingQueue = false; }
             }
             hadActivePlayer = false;
+            syncYouTubeTracking({ playerActive: false });
         } else {
             hadActivePlayer = true;
             const props = await kodiRpc("Player.GetProperties", { playerid, properties: ["time", "totaltime", "speed"] });
             const seconds = value => Number(value?.hours ?? 0) * 3600 + Number(value?.minutes ?? 0) * 60 + Number(value?.seconds ?? 0) + Number(value?.milliseconds ?? 0) / 1000;
-            state.playback = { ...state.playback, paused: props.speed === 0, buffering: false, currentTime: seconds(props.time), duration: seconds(props.totaltime) || state.playback.duration, volume: app.volume ?? state.playback.volume, error: null };
+            const currentTime = await maybeSkipSponsorSegment(playerid, seconds(props.time));
+            state.playback = { ...state.playback, paused: props.speed === 0, buffering: false, currentTime, duration: seconds(props.totaltime) || state.playback.duration, volume: app.volume ?? state.playback.volume, error: null };
+            syncYouTubeTracking({ playerActive: true });
         }
         broadcast("playback", state.playback);
     } catch (error) {
@@ -500,16 +615,28 @@ async function pollKodi() {
 }
 
 function ensurePolling() {
-    if (!pollTimer) pollTimer = setInterval(() => void pollKodi(), 1_500);
+    if (!pollTimer) pollTimer = setInterval(() => void pollKodi(), 1_000);
     void pollKodi();
+}
+
+function kodiSeekValue(seconds) {
+    const totalMilliseconds = Math.max(0, Math.round(Number(seconds) * 1000) || 0);
+    return {
+        time: {
+            hours: Math.floor(totalMilliseconds / 3_600_000),
+            minutes: Math.floor((totalMilliseconds % 3_600_000) / 60_000),
+            seconds: Math.floor((totalMilliseconds % 60_000) / 1000),
+            milliseconds: totalMilliseconds % 1000,
+        },
+    };
 }
 
 async function controlPlayback(body) {
     const playerid = await activePlayerId();
     switch (body.action) {
         case "playpause": if (playerid !== null) await kodiRpc("Player.PlayPause", { playerid }); break;
-        case "seek": if (playerid !== null) await kodiRpc("Player.Seek", { playerid, value: { seconds: Math.max(0, Number(body.seconds) || 0) } }); break;
-        case "seekBy": if (playerid !== null) await kodiRpc("Player.Seek", { playerid, value: body.seconds >= 0 ? "smallforward" : "smallbackward" }); break;
+        case "seek": if (playerid !== null) await kodiRpc("Player.Seek", { playerid, value: kodiSeekValue(body.seconds) }); break;
+        case "seekBy": if (playerid !== null) await kodiRpc("Player.Seek", { playerid, value: kodiSeekValue((Number(state.playback.currentTime) || 0) + (Number(body.seconds) || 0)) }); break;
         case "volume": await kodiRpc("Application.SetVolume", { volume: Math.max(0, Math.min(100, Number(body.volume) || 0)) }); break;
         case "up": await kodiRpc("Input.Up"); break;
         case "down": await kodiRpc("Input.Down"); break;
@@ -520,7 +647,7 @@ async function controlPlayback(body) {
         case "home": await kodiRpc("Input.Home"); break;
         default: throw new Error("Unknown playback command.");
     }
-    void pollKodi();
+    await pollKodi();
 }
 
 async function serveStatic(response, pathname) {
@@ -536,6 +663,46 @@ async function serveStatic(response, pathname) {
         try { const body = await fs.readFile(path.join(distDir, "index.html")); response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); response.end(body); }
         catch { sendJson(response, 503, { error: "Product UI is not built. Run pnpm product:build." }); }
     }
+}
+
+function serveSilentAudio(request, response, url) {
+    const requestedDuration = Number(url.searchParams.get("duration"));
+    const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
+        ? Math.min(requestedDuration, silentAudioMaxDurationSeconds)
+        : 1;
+    const sampleCount = Math.max(1, Math.ceil(duration * silentAudioSampleRate));
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0, "ascii"); header.writeUInt32LE(36 + sampleCount, 4); header.write("WAVE", 8, "ascii");
+    header.write("fmt ", 12, "ascii"); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(silentAudioSampleRate, 24); header.writeUInt32LE(silentAudioSampleRate, 28); header.writeUInt16LE(1, 32); header.writeUInt16LE(8, 34);
+    header.write("data", 36, "ascii"); header.writeUInt32LE(sampleCount, 40);
+    const totalLength = header.length + sampleCount;
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(request.headers.range ?? "");
+    let start = 0; let end = totalLength - 1; let partial = false;
+    if (match && (match[1] || match[2])) {
+        if (!match[1]) { const suffix = Number(match[2]); start = Math.max(totalLength - suffix, 0); }
+        else { start = Number(match[1]); end = match[2] ? Math.min(Number(match[2]), totalLength - 1) : end; }
+        partial = Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start < totalLength && end >= start;
+        if (!partial) { response.writeHead(416, { "Content-Range": `bytes */${totalLength}` }); response.end(); return; }
+    }
+    response.writeHead(partial ? 206 : 200, {
+        "Accept-Ranges": "bytes", "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Length": end - start + 1, "Content-Type": "audio/wav",
+        ...(partial ? { "Content-Range": `bytes ${start}-${end}/${totalLength}` } : {}),
+    });
+    if (request.method === "HEAD") { response.end(); return; }
+    let offset = start;
+    const write = () => {
+        while (offset <= end) {
+            const chunk = offset < header.length
+                ? header.subarray(offset, Math.min(header.length, end + 1))
+                : Buffer.alloc(Math.min(silentAudioChunkSizeBytes, end - offset + 1), 128);
+            offset += chunk.length;
+            if (!response.write(chunk)) { response.once("drain", write); return; }
+        }
+        response.end();
+    };
+    write();
 }
 
 const server = http.createServer(async (request, response) => {
@@ -554,7 +721,7 @@ const server = http.createServer(async (request, response) => {
         if (url.pathname === "/api/account/browser/complete" && request.method === "POST") return sendJson(response, 200, await completeBrowserAuth());
         if (url.pathname === "/api/account/browser" && request.method === "DELETE") { await stopBrowserAuth(); return sendJson(response, 200, { ok: true }); }
         if (url.pathname === "/api/account/session" && request.method === "DELETE") { await ensureConnector(); const payload = await fetch(`${connectorUrl}/api/ytsync/session`, { method: "DELETE", signal: AbortSignal.timeout(10_000) }); return sendJson(response, payload.ok ? 200 : 400, await payload.json()); }
-        if (url.pathname === "/api/catalog/home") return sendJson(response, 200, await homeCatalog());
+        if (url.pathname === "/api/catalog/home") return sendJson(response, 200, await homeCatalog(url.searchParams.get("continuation") ?? ""));
         if (url.pathname === "/api/catalog/search") return sendJson(response, 200, { items: await searchCatalog(url.searchParams.get("q")) });
         if (url.pathname.startsWith("/api/catalog/channel/")) return sendJson(response, 200, await channelCatalog(decodeURIComponent(url.pathname.split("/").at(-1))));
         if (url.pathname === "/api/queue" && request.method === "GET") return sendJson(response, 200, snapshot());
@@ -569,6 +736,7 @@ const server = http.createServer(async (request, response) => {
             if (index >= 0 && next >= 0 && next < state.queue.length) [state.queue[index], state.queue[next]] = [state.queue[next], state.queue[index]];
             await persist(); broadcast("state"); return sendJson(response, 200, snapshot());
         }
+        if (url.pathname === "/api/playback/silent.wav" && ["GET", "HEAD"].includes(request.method)) return serveSilentAudio(request, response, url);
         if (url.pathname === "/api/playback/play" && request.method === "POST") return sendJson(response, 200, await playVideo(await readJson(request)));
         if (url.pathname === "/api/playback/control" && request.method === "POST") { await controlPlayback(await readJson(request)); return sendJson(response, 200, { ok: true }); }
         if (url.pathname === "/api/settings/kodi" && request.method === "PUT") { state.kodi = sanitizeKodiConfig(await readJson(request)); await persist(); broadcast("state"); return sendJson(response, 200, { kodi: publicKodi() }); }

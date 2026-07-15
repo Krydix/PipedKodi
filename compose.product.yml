@@ -28,6 +28,8 @@ services:
             YT_SYNC_ALLOWED_ORIGIN: http://app:8095
             YT_SYNC_ENCRYPTION_KEY: ${YT_SYNC_ENCRYPTION_KEY:-}
             YT_SYNC_SESSION_FILE: /data/youtube-session.json
+            YT_DLP_BIN: ${YT_DLP_BIN:-yt-dlp}
+            YT_DLP_TIMEOUT_MS: ${YT_DLP_TIMEOUT_MS:-30000}
         volumes:
             - youtube-session-data:/data
 

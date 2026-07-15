@@ -18,6 +18,9 @@
                 </div>
                 <p v-if="!home.personalized && !loading" class="notice">Connect a YouTube session for your personalized Home feed. Browsing and playback work without it.</p>
                 <MediaGrid :items="home.items" :loading="loading" @play="play" @queue="enqueue" @channel="openChannel" />
+                <div v-if="home.nextPageToken" ref="homeSentinel" class="feed-sentinel" aria-hidden="true">
+                    <span v-if="loadingMore">Loading more recommendations…</span>
+                </div>
             </section>
 
             <section v-else-if="view === 'search'" class="page">
@@ -42,8 +45,20 @@
                 <article v-if="state.nowPlaying" class="now-playing">
                     <img :src="state.nowPlaying.thumbnail" alt="" />
                     <div class="now-info"><h2>{{ state.nowPlaying.title }}</h2><p>{{ state.nowPlaying.channelName }}</p></div>
-                    <div class="progress"><div :style="{ width: progress + '%' }" /></div>
-                    <div class="time-row"><span>{{ formatTime(state.playback.currentTime) }}</span><span>{{ formatTime(state.playback.duration) }}</span></div>
+                    <input
+                        v-model.number="scrubberPosition"
+                        class="progress scrubber"
+                        type="range"
+                        min="0"
+                        :max="state.playback.duration || 0"
+                        step="1"
+                        aria-label="Playback position"
+                        :disabled="!state.playback.duration"
+                        :style="{ '--progress': progress + '%', '--segments': segmentGradient }"
+                        @input="scrubbing = true"
+                        @change="commitScrub"
+                    />
+                    <div class="time-row"><span>{{ formatTime(scrubberPosition) }}</span><span>{{ formatTime(state.playback.duration) }}</span></div>
                     <div class="transport">
                         <button class="icon-button" aria-label="Back ten seconds" @click="control({ action: 'seekBy', seconds: -10 })">−10</button>
                         <button class="play-button" :aria-label="state.playback.paused ? 'Play' : 'Pause'" @click="control({ action: 'playpause' })">{{ state.playback.paused ? "▶" : "Ⅱ" }}</button>
@@ -112,8 +127,9 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { api } from "./api.js";
+import { createNowPlayingSession } from "./nowPlayingSession.js";
 
 const MediaGrid = defineComponent({
     props: { items: { type: Array, default: () => [] }, loading: Boolean },
@@ -123,33 +139,56 @@ const MediaGrid = defineComponent({
             ? Array.from({ length: 8 }, (_, i) => h("div", { class: "media-card skeleton", key: i }, [h("div", { class: "thumb" }), h("div", { class: "line" }), h("div", { class: "line short" })]))
             : props.items.map(item => h("article", { class: "media-card", key: item.id }, [
                 h("button", { class: "thumbnail-button", onClick: () => emit("play", item), "aria-label": `Play ${item.title}` }, [h("img", { src: item.thumbnail, alt: "", loading: "lazy" }), h("span", { class: "play-overlay" }, "▶"), item.duration ? h("small", formatTime(item.duration)) : null]),
-                h("div", { class: "media-copy" }, [h("h3", item.title), h("button", { class: "channel-link", disabled: !item.channelId, onClick: () => emit("channel", item) }, item.channelName || "YouTube"), h("button", { class: "add-button", onClick: () => emit("queue", item) }, "+ Queue")]),
+                h("div", { class: "media-copy" }, [h("div", { class: "media-details" }, [h("h3", item.title), h("button", { class: "channel-link", disabled: !item.channelId, onClick: () => emit("channel", item) }, item.channelName || "YouTube")]), h("button", { class: "add-button", onClick: () => emit("queue", item) }, "+ Queue")]),
             ])));
     },
 });
 
-const view = ref("home"); const previousView = ref("home"); const query = ref(""); const searchInput = ref(null);
-const loading = ref(true); const searching = ref(false); const home = ref({ personalized: false, items: [] }); const searchResults = ref([]); const channel = ref({ items: [] });
-const status = ref(null); const state = ref({ queue: [], nowPlaying: null, playback: { paused: true, currentTime: 0, duration: 0, volume: 50 } });
+const view = ref("home"); const previousView = ref("home"); const query = ref(loadLastSearch()); const searchInput = ref(null);
+const loading = ref(true); const loadingMore = ref(false); const searching = ref(false); const home = ref({ personalized: false, items: [], nextPageToken: null }); const homeSentinel = ref(null); const searchResults = ref([]); const channel = ref({ items: [] });
+const status = ref(null); const state = ref({ queue: [], nowPlaying: null, sponsorSegments: [], playback: { paused: true, currentTime: 0, duration: 0, volume: 50 } });
+const scrubberPosition = ref(0); const scrubbing = ref(false);
 const kodiForm = ref({ address: "", username: "", password: "" }); const settingsMessage = ref(""); const settingsError = ref(false); const saving = ref(false); const toast = ref(null);
 const discovering = ref(false); const discoveryComplete = ref(false); const discoveredDevices = ref([]);
 const browserAuth = ref({ supported: true, ready: false }); const browserChecked = ref(false); const accountBusy = ref(false); const accountMessage = ref(""); const accountError = ref(false);
-let toastTimer; let socket;
-const progress = computed(() => state.value.playback.duration ? Math.min(100, state.value.playback.currentTime / state.value.playback.duration * 100) : 0);
+let toastTimer; let socket; let nowPlayingSession; let homeObserver;
+const progress = computed(() => state.value.playback.duration ? Math.min(100, scrubberPosition.value / state.value.playback.duration * 100) : 0);
+const segmentGradient = computed(() => {
+    const duration = Number(state.value.playback.duration) || 0;
+    if (!duration || !state.value.sponsorSegments?.length) return "linear-gradient(transparent, transparent)";
+    const stops = state.value.sponsorSegments.flatMap(segment => {
+        const start = Math.max(0, Math.min(100, Number(segment.segment?.[0]) / duration * 100));
+        const end = Math.max(start, Math.min(100, Number(segment.segment?.[1]) / duration * 100));
+        return [`transparent ${start}%`, `#e7a93b ${start}%`, `#e7a93b ${end}%`, `transparent ${end}%`];
+    });
+    return `linear-gradient(to right, ${stops.join(", ")})`;
+});
 
 function formatTime(value) { const total = Math.max(0, Math.floor(Number(value) || 0)); const hours = Math.floor(total / 3600); const minutes = Math.floor(total % 3600 / 60); const seconds = total % 60; return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}` : `${minutes}:${String(seconds).padStart(2, "0")}`; }
+function loadLastSearch() { try { return sessionStorage.getItem("piped-kodi:last-search") ?? ""; } catch { return ""; } }
+function saveLastSearch(value) { try { sessionStorage.setItem("piped-kodi:last-search", value); } catch { /* Storage may be unavailable in private browsing. */ } }
 function showToast(message, error = false) { toast.value = { message, error }; clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.value = null, 3200); }
-function applyState(value) { state.value = { ...state.value, ...value, playback: { ...state.value.playback, ...(value.playback ?? {}) } }; }
+function applyState(value) { state.value = { ...state.value, ...value, playback: { ...state.value.playback, ...(value.playback ?? {}) } }; if (!scrubbing.value) scrubberPosition.value = state.value.playback.currentTime || 0; nowPlayingSession?.sync(); }
 async function refreshStatus() { status.value = await api.status(); applyState(status.value); kodiForm.value = { address: status.value.kodi.address, username: status.value.kodi.username, password: "" }; }
 async function loadHome() { loading.value = true; try { home.value = await api.home(); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
-async function runSearch() { if (!query.value.trim()) return; searching.value = true; try { searchResults.value = (await api.search(query.value)).items; } catch (error) { showToast(error.message, true); } finally { searching.value = false; } }
+async function loadMoreHome() { if (view.value !== "home" || loading.value || loadingMore.value || !home.value.nextPageToken) return; loadingMore.value = true; try { const page = await api.home(home.value.nextPageToken); const knownIds = new Set(home.value.items.map(item => item.id)); home.value = { ...home.value, nextPageToken: page.nextPageToken, items: [...home.value.items, ...page.items.filter(item => !knownIds.has(item.id))] }; } catch (error) { showToast(error.message, true); } finally { loadingMore.value = false; } }
+async function runSearch() { searchInput.value?.blur(); const searchQuery = query.value.trim(); if (!searchQuery) return; saveLastSearch(searchQuery); searching.value = true; try { searchResults.value = (await api.search(searchQuery)).items; } catch (error) { showToast(error.message, true); } finally { searching.value = false; } }
 async function play(item) { try { showToast(`Sending “${item.title}” to Kodi`); applyState(await api.play(item)); navigate("queue"); } catch (error) { showToast(error.message, true); } }
 async function enqueue(item) { try { applyState(await api.enqueue(item)); showToast("Added to queue"); } catch (error) { showToast(error.message, true); } }
 async function remove(item) { applyState(await api.removeQueueItem(item.queueId)); }
 async function move(item, direction) { applyState(await api.moveQueueItem(item.queueId, direction)); }
 async function control(payload) { try { await api.control(payload); } catch (error) { showToast(error.message, true); } }
+async function commitScrub() {
+    const seconds = Math.min(Math.max(Number(scrubberPosition.value) || 0, 0), Number(state.value.playback.duration) || 0);
+    scrubbing.value = true;
+    scrubberPosition.value = seconds;
+    state.value.playback.currentTime = seconds;
+    nowPlayingSession?.sync();
+    await control({ action: "seek", seconds });
+    scrubbing.value = false;
+}
 async function openChannel(item) { if (!item.channelId) return; previousView.value = view.value; view.value = "channel"; loading.value = true; channel.value = { title: item.channelName, items: [] }; try { channel.value = await api.channel(item.channelId); } catch (error) { showToast(error.message, true); } finally { loading.value = false; } }
-function navigate(next) { view.value = next; if (next === "search") nextTick(() => searchInput.value?.focus()); if (next === "settings") void refreshBrowserAuth(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+function navigate(next) { const focusSearch = next === "search" && view.value === "search"; view.value = next; if (focusSearch) nextTick(() => searchInput.value?.focus()); if (next === "settings") void refreshBrowserAuth(); window.scrollTo({ top: 0, behavior: "smooth" }); }
 async function testKodi() { saving.value = true; settingsMessage.value = ""; try { await api.testKodi(kodiForm.value); settingsError.value = false; settingsMessage.value = "Kodi responded successfully."; } catch (error) { settingsError.value = true; settingsMessage.value = error.message; } finally { saving.value = false; } }
 async function saveKodi() { saving.value = true; settingsMessage.value = ""; try { await api.saveKodi(kodiForm.value); settingsError.value = false; settingsMessage.value = "Kodi settings saved locally."; await refreshStatus(); } catch (error) { settingsError.value = true; settingsMessage.value = error.message; } finally { saving.value = false; } }
 async function discoverKodi() { discovering.value = true; discoveryComplete.value = false; settingsMessage.value = ""; try { discoveredDevices.value = (await api.discoverKodi()).devices; discoveryComplete.value = true; if (discoveredDevices.value.length === 1) selectKodi(discoveredDevices.value[0]); } catch (error) { settingsError.value = true; settingsMessage.value = error.message; } finally { discovering.value = false; } }
@@ -161,6 +200,7 @@ async function stopAccountBrowser() { accountBusy.value = true; try { await api.
 async function disconnectAccount() { accountBusy.value = true; accountMessage.value = ""; try { await api.disconnectYouTube(); accountError.value = false; accountMessage.value = "YouTube disconnected and the imported session was removed."; await Promise.all([refreshStatus(), loadHome(), refreshBrowserAuth()]); } catch (error) { accountError.value = true; accountMessage.value = error.message; } finally { accountBusy.value = false; } }
 function connectEvents() { const protocol = location.protocol === "https:" ? "wss:" : "ws:"; socket = new WebSocket(`${protocol}//${location.host}/api/events`); socket.onmessage = event => { const message = JSON.parse(event.data); if (message.type === "playback") applyState({ playback: message.payload }); else applyState(message.payload); }; socket.onclose = () => setTimeout(connectEvents, 1500); }
 
-onMounted(async () => { try { await Promise.all([refreshStatus(), loadHome(), refreshBrowserAuth()]); connectEvents(); } catch (error) { showToast(error.message, true); } });
-onUnmounted(() => { socket?.close(); clearTimeout(toastTimer); });
+watch(homeSentinel, element => { homeObserver?.disconnect(); if (element) { homeObserver = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) void loadMoreHome(); }, { rootMargin: "600px 0px" }); homeObserver.observe(element); } });
+onMounted(async () => { nowPlayingSession = createNowPlayingSession({ getMedia: () => ({ ...state.value.nowPlaying, ...state.value.playback }), control }); try { await Promise.all([refreshStatus(), loadHome(), refreshBrowserAuth()]); connectEvents(); } catch (error) { showToast(error.message, true); } });
+onUnmounted(() => { socket?.close(); homeObserver?.disconnect(); nowPlayingSession?.destroy(); clearTimeout(toastTimer); });
 </script>

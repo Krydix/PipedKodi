@@ -1,9 +1,14 @@
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 import { URL } from "node:url";
+
+const execFileAsync = promisify(execFile);
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 8091);
@@ -14,6 +19,9 @@ const encryptionKey = process.env.YT_SYNC_ENCRYPTION_KEY ?? "";
 const defaultLanguage = process.env.YT_SYNC_ACCEPT_LANGUAGE ?? "en-US,en;q=0.9";
 const watchEventLimit = Number(process.env.YT_SYNC_WATCH_EVENT_LIMIT ?? 500);
 const watchTrackingCacheTtlMs = Number(process.env.YT_SYNC_TRACKING_CACHE_TTL_MS ?? 1000 * 60 * 30);
+const historyMarkRetryMs = Number(process.env.YT_SYNC_HISTORY_MARK_RETRY_MS ?? 1000 * 60 * 5);
+const ytDlpTimeoutMs = Number(process.env.YT_DLP_TIMEOUT_MS ?? 30_000);
+const ytDlpBin = process.env.YT_DLP_BIN ?? "yt-dlp";
 
 const youtubeHomeUrl = "https://www.youtube.com/";
 const youtubeWatchUrl = "https://www.youtube.com/watch";
@@ -525,6 +533,39 @@ function findRichGridContents(payload) {
     return [];
 }
 
+function findContinuationItems(payload) {
+    const actions = [
+        ...(payload?.onResponseReceivedActions ?? []),
+        ...(payload?.onResponseReceivedEndpoints ?? []),
+    ];
+
+    for (const action of actions) {
+        const items = action?.appendContinuationItemsAction?.continuationItems;
+        if (Array.isArray(items)) return items;
+    }
+
+    return [];
+}
+
+function findContinuationToken(contents) {
+    for (const content of contents) {
+        const token =
+            content?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token ??
+            content?.continuationItemRenderer?.button?.buttonRenderer?.command?.continuationCommand?.token;
+        if (token) return token;
+    }
+
+    return null;
+}
+
+function extractInnertubeConfig(html) {
+    const read = key => html.match(new RegExp(`"${key}":"([^"]+)"`))?.[1];
+    const apiKey = read("INNERTUBE_API_KEY");
+    const clientVersion = read("INNERTUBE_CLIENT_VERSION");
+    if (!apiKey || !clientVersion) throw new Error("Unable to locate the YouTube client configuration.");
+    return { apiKey, clientVersion };
+}
+
 function extractVideoId(navigationEndpoint) {
     return navigationEndpoint?.watchEndpoint?.videoId ?? null;
 }
@@ -647,17 +688,39 @@ function normalizeHomeItem(content) {
     };
 }
 
-async function fetchYouTubeHome(cookieHeader = connectorState.session?.cookieHeader) {
+async function fetchYouTubeHome(cookieHeader = connectorState.session?.cookieHeader, continuation = "") {
     if (!cookieHeader) {
         throw new Error("No YouTube session connected.");
     }
 
     const html = await fetchYouTubePage(youtubeHomeUrl, cookieHeader);
-    const initialData = extractInitialData(html);
-    const items = findRichGridContents(initialData).map(normalizeHomeItem).filter(Boolean);
+    const config = extractInnertubeConfig(html);
+    let contents;
+
+    if (continuation) {
+        const response = await fetch(`https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(config.apiKey)}`, {
+            method: "POST",
+            headers: getYouTubeHeaders(cookieHeader, {
+                "Content-Type": "application/json",
+                "X-YouTube-Client-Name": "1",
+                "X-YouTube-Client-Version": config.clientVersion,
+            }),
+            body: JSON.stringify({
+                context: { client: { clientName: "WEB", clientVersion: config.clientVersion, hl: "en", gl: "US" } },
+                continuation,
+            }),
+        });
+        if (!response.ok) throw new Error(`YouTube continuation request failed with ${response.status}.`);
+        contents = findContinuationItems(await response.json());
+    } else {
+        contents = findRichGridContents(extractInitialData(html));
+    }
+
+    const items = contents.map(normalizeHomeItem).filter(Boolean);
 
     return {
         items,
+        nextPageToken: findContinuationToken(contents),
         fetchedAt: Date.now(),
         source: "youtube-sync",
     };
@@ -695,6 +758,8 @@ async function getWatchTracking(videoId) {
     const trackingState = {
         videoId,
         fetchedAt: Date.now(),
+        cpn: crypto.randomBytes(12).toString("base64url").slice(0, 16),
+        sessionStartedAt: Date.now(),
         playback: normalizeTrackingUrl(playbackTracking.videostatsPlaybackUrl?.baseUrl),
         watchtime: normalizeTrackingUrl(playbackTracking.videostatsWatchtimeUrl?.baseUrl),
         ptracking: normalizeTrackingUrl(playbackTracking.ptrackingUrl?.baseUrl),
@@ -702,6 +767,9 @@ async function getWatchTracking(videoId) {
         lastCurrentTime: 0,
         lastEventType: null,
         lastSentAt: 0,
+        historyMarked: false,
+        historyMarkAttemptedAt: 0,
+        historyMarkPromise: null,
     };
 
     watchTrackingCache.set(videoId, trackingState);
@@ -733,7 +801,7 @@ async function dispatchTrackingRequest(targetUrl) {
     if (!targetUrl || !connectorState.session?.cookieHeader) return false;
 
     try {
-        await fetch(targetUrl, {
+        const response = await fetch(targetUrl, {
             headers: getYouTubeHeaders(connectorState.session.cookieHeader, {
                 Accept: "*/*",
                 Origin: "https://www.youtube.com",
@@ -742,11 +810,88 @@ async function dispatchTrackingRequest(targetUrl) {
             method: "GET",
             redirect: "follow",
         });
+        if (!response.ok) {
+            console.warn(`YouTube tracking request returned HTTP ${response.status}.`);
+            return false;
+        }
         return true;
     } catch (error) {
         console.error("Unable to dispatch YouTube tracking request.", error);
         return false;
     }
+}
+
+function createNetscapeCookieFile(cookieHeader) {
+    const rows = cookieHeader
+        .split(";")
+        .map(part => part.trim())
+        .filter(Boolean)
+        .map(part => {
+            const separator = part.indexOf("=");
+            if (separator <= 0) return null;
+            const name = part.slice(0, separator).trim();
+            const value = part.slice(separator + 1).trim();
+            if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || /[\t\r\n]/.test(value)) return null;
+            return `.youtube.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`;
+        })
+        .filter(Boolean);
+
+    if (rows.length === 0) throw new Error("The YouTube session contains no usable cookies.");
+    return `# Netscape HTTP Cookie File\n${rows.join("\n")}\n`;
+}
+
+async function markVideoWatchedWithYtDlp(videoId) {
+    if (!connectorState.session?.cookieHeader) throw new Error("No YouTube session connected.");
+
+    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "pipedkodi-ytdlp-"));
+    const cookieFile = path.join(temporaryDirectory, "cookies.txt");
+
+    try {
+        await fs.writeFile(cookieFile, createNetscapeCookieFile(connectorState.session.cookieHeader), {
+            encoding: "utf8",
+            mode: 0o600,
+        });
+        await execFileAsync(
+            ytDlpBin,
+            [
+                "--ignore-config",
+                "--no-warnings",
+                "--simulate",
+                "--mark-watched",
+                "--cookies",
+                cookieFile,
+                "--no-playlist",
+                `${youtubeWatchUrl}?v=${videoId}`,
+            ],
+            { timeout: ytDlpTimeoutMs, maxBuffer: 1024 * 1024 },
+        );
+        return true;
+    } finally {
+        await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
+}
+
+async function maybeMarkVideoWatched(trackingState, duration, currentTime) {
+    const threshold = duration ? Math.min(30, Math.max(duration - 1, 0)) : 30;
+    if (trackingState.historyMarked || currentTime < threshold) return false;
+    if (trackingState.historyMarkPromise) return trackingState.historyMarkPromise;
+    if (Date.now() - trackingState.historyMarkAttemptedAt < historyMarkRetryMs) return false;
+
+    trackingState.historyMarkAttemptedAt = Date.now();
+    trackingState.historyMarkPromise = markVideoWatchedWithYtDlp(trackingState.videoId)
+        .then(() => {
+            trackingState.historyMarked = true;
+            return true;
+        })
+        .catch(error => {
+            console.error(`yt-dlp could not mark ${trackingState.videoId} as watched.`, error?.message ?? error);
+            return false;
+        })
+        .finally(() => {
+            trackingState.historyMarkPromise = null;
+        });
+
+    return trackingState.historyMarkPromise;
 }
 
 async function forwardWatchEventToYouTube(event) {
@@ -757,24 +902,28 @@ async function forwardWatchEventToYouTube(event) {
     const segmentStart = Math.min(previousTime, currentTime).toFixed(3);
     const segmentEnd = Math.max(previousTime, currentTime).toFixed(3);
     const roundedCurrentTime = currentTime.toFixed(3);
+    const runtime = Math.max(0, (Date.now() - trackingState.sessionStartedAt) / 1000);
+    const youtubeState = event.eventType === "pause" ? "paused" : event.eventType === "ended" ? "ended" : "playing";
 
     const commonParams = {
         cmt: roundedCurrentTime,
-        rt: roundedCurrentTime,
+        rt: runtime.toFixed(3),
+        rtn: Math.ceil(runtime + 10),
+        cpn: trackingState.cpn,
+        len: duration?.toFixed(3),
         lact: 0,
     };
 
     const requests = [];
-
     if (["start", "progress", "pause", "resume", "ended"].includes(event.eventType)) {
-        requests.push(setTrackingParams(trackingState.playback, { ...commonParams, state: event.eventType }));
+        if (event.eventType === "start") requests.push(setTrackingParams(trackingState.playback, commonParams));
         requests.push(
             setTrackingParams(trackingState.watchtime, {
                 ...commonParams,
                 st: segmentStart,
                 et: segmentEnd,
                 final: event.eventType === "ended" ? 1 : 0,
-                state: event.eventType,
+                state: youtubeState,
             }),
         );
     }
@@ -785,12 +934,13 @@ async function forwardWatchEventToYouTube(event) {
     }
 
     const delivered = await Promise.all(requests.filter(Boolean).map(dispatchTrackingRequest));
+    const historyMarked = await maybeMarkVideoWatched(trackingState, duration, currentTime);
 
     trackingState.lastCurrentTime = currentTime;
     trackingState.lastEventType = event.eventType;
     trackingState.lastSentAt = Date.now();
 
-    return delivered.filter(Boolean).length;
+    return delivered.filter(Boolean).length + (historyMarked ? 1 : 0);
 }
 
 function normalizeWatchEvent(body) {
@@ -885,7 +1035,7 @@ const server = http.createServer(async (request, response) => {
         }
 
         if (requestUrl.pathname === "/api/ytsync/home" && request.method === "GET") {
-            const home = await fetchYouTubeHome();
+            const home = await fetchYouTubeHome(undefined, requestUrl.searchParams.get("continuation") ?? "");
             sendJson(response, 200, home);
             return;
         }
